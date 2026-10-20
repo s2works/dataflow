@@ -37,13 +37,16 @@ RELEASES = "https://github.com/nflverse/nflverse-data/releases/download"
 PLAYER_STATS_URL = RELEASES + "/stats_player/stats_player_week_{season}.csv"
 SCHEDULE_URL = RELEASES + "/schedules/games.csv"
 INJURIES_URL = RELEASES + "/injuries/injuries_{season}.csv"
+SNAPS_URL = RELEASES + "/snap_counts/snap_counts_{season}.csv"
+# Defensive backs: their injuries and snap shares drive the "secondary out" factor.
+DB_POSITIONS = {"CB", "S", "FS", "SS", "DB", "SAF"}
 PBP_URL = RELEASES + "/pbp/play_by_play_{season}.csv.gz"
 PBP_COLS = [
     "game_id", "season_type", "yardline_100", "rush_attempt", "pass_attempt", "two_point_attempt",
     "rusher_player_id", "receiver_player_id", "rush_touchdown", "pass_touchdown",
     "play_id", "qtr", "touchdown", "td_team", "td_player_id",
     "passer_player_id", "passing_yards", "receiving_yards", "rushing_yards", "complete_pass",
-    "posteam", "play_type", "epa",
+    "posteam", "play_type", "epa", "wp", "score_differential", "pass",
 ]
 
 # Player props from The Odds API (https://the-odds-api.com). Optional: only runs
@@ -122,7 +125,9 @@ RZ_COLS = [
     "car_gl", "car_rz", "tgt_rz", "q1_car", "q1_tgt", "ftd_game", "ftd_team",
     "q1_rec", "q1_rec_yds", "q1_rush_yds", "q1_pass_yds",
 ]
-PLAYER_COLS = POS_COLS  # plus RZ_COLS when play-by-play is available
+# Player-game columns: position columns plus receiving air yards (for a
+# yards-per-target check); RZ_COLS and snap share are added when available.
+PLAYER_COLS = {**POS_COLS, "receiving_air_yards": "air"}
 
 
 def fetch(url: str, cache_name: str, max_age_hours: float) -> bytes:
@@ -223,7 +228,7 @@ def build_player_games(stats: pd.DataFrame) -> tuple[list[dict], list[dict]]:
         .sort_values("name")
     )
 
-    extra = [c for c in RZ_COLS if c in s.columns]
+    extra = [c for c in [*RZ_COLS, "snap"] if c in s.columns]
     games = (
         s[["player_id", "game_id", "week", "team", "opponent_team", *PLAYER_COLS, *extra]]
         .rename(columns={**PLAYER_COLS, "player_id": "id", "opponent_team": "opp"})
@@ -237,19 +242,20 @@ def build_player_games(stats: pd.DataFrame) -> tuple[list[dict], list[dict]]:
 
 
 def build_injuries(season: int) -> list[dict]:
-    """Weekly official injury report entries for skill positions."""
+    """Weekly official injury report entries for skill positions and DBs."""
     try:
         raw = fetch(INJURIES_URL.format(season=season), f"injuries_{season}.csv", CACHE_HOURS)
     except Exception as exc:  # noqa: BLE001 - not published yet
         print(f"  no injury report for {season}: {exc}")
         return []
     inj = pd.read_csv(io.BytesIO(raw), low_memory=False)
-    inj = inj[inj["position"].isin(POSITIONS) & inj["report_status"].isin(["Out", "Doubtful", "Questionable"])]
+    keep = inj["position"].isin(POSITIONS) | inj["position"].isin(DB_POSITIONS)
+    inj = inj[keep & inj["report_status"].isin(["Out", "Doubtful", "Questionable"])]
     inj = inj.rename(columns={
         "gsis_id": "id", "full_name": "name", "position": "pos", "report_status": "status",
         "report_primary_injury": "injury", "practice_status": "practice",
     })
-    inj["pos"] = inj["pos"].map(POSITIONS)
+    inj["pos"] = inj["pos"].map(lambda p: POSITIONS.get(p) or ("DB" if p in DB_POSITIONS else p))
     return records(inj[["week", "team", "id", "name", "pos", "status", "injury", "practice"]].sort_values(["week", "team", "name"]))
 
 
@@ -448,9 +454,35 @@ def build_red_zone(season: int) -> tuple[pd.DataFrame | None, dict | None, pd.Da
     # Team offensive EPA on dropbacks and runs (game-strength signal for the game model).
     plays = pbp[pbp["play_type"].isin(["pass", "run"]) & pbp["epa"].notna() & pbp["posteam"].notna()]
     epa = plays.groupby(["game_id", "posteam"]).agg(epa=("epa", "sum"), plays=("epa", "size")).reset_index()
+    # Competitive plays only (win probability 10-90%): drops garbage time.
+    comp = plays[plays["wp"].between(0.1, 0.9)]
+    epa_f = comp.groupby(["game_id", "posteam"]).agg(epa_f=("epa", "sum"), plays_f=("epa", "size")).reset_index()
+    # Neutral situations (Q1-3, within 7 points): how pass-heavy a team really is.
+    neu = plays[(plays["qtr"] <= 3) & (plays["score_differential"].abs() <= 7)]
+    neutral = neu.groupby(["game_id", "posteam"]).agg(npass=("pass", "sum"), nplays=("pass", "size")).reset_index()
+    epa = epa.merge(epa_f, on=["game_id", "posteam"], how="left").merge(neutral, on=["game_id", "posteam"], how="left")
     epa = epa.rename(columns={"posteam": "team"})
-    epa["epa"] = epa["epa"].round(2)
+    epa[["epa", "epa_f"]] = epa[["epa", "epa_f"]].round(2)
     return rz, td_rates, epa
+
+
+def build_snaps(season: int, stats: pd.DataFrame) -> tuple[pd.DataFrame, list]:
+    """Offensive snap share for skill players (merged into stats) and
+    defensive-back snap shares [week, team, name, pct] for the secondary factor."""
+    try:
+        raw = fetch(SNAPS_URL.format(season=season), f"snap_counts_{season}.csv", CACHE_HOURS)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  no snap counts for {season}: {exc}")
+        return stats, []
+    sn = pd.read_csv(io.BytesIO(raw), low_memory=False)
+    sn = sn[sn["game_type"].isin(["REG", "POST"])].copy()
+    sn["k"] = sn["player"].map(norm_name)
+    off = sn[["game_id", "team", "k", "offense_pct"]].drop_duplicates(["game_id", "team", "k"])
+    off = off.assign(snap=(off["offense_pct"] * 100).round().astype(int)).drop(columns="offense_pct")
+    stats = stats.assign(k=stats["player_display_name"].map(norm_name)).merge(off, on=["game_id", "team", "k"], how="left").drop(columns="k")
+    db = sn[sn["position"].isin(DB_POSITIONS) & (sn["defense_pct"] > 0)]
+    db_snaps = [[int(r.week), r.team, r.player, int(round(r.defense_pct * 100))] for r in db.itertuples()]
+    return stats, db_snaps
 
 
 def build_season(season: int, games: pd.DataFrame) -> dict | None:
@@ -463,13 +495,15 @@ def build_season(season: int, games: pd.DataFrame) -> dict | None:
     stats = pd.read_csv(io.BytesIO(raw), low_memory=False)
     stats = stats[stats["season_type"].isin(["REG", "POST"])].copy()
     stats["pos"] = stats["position"].map(POSITIONS)
-    num_cols = list(set(TEAM_COLS) | set(POS_COLS))
+    num_cols = list(set(TEAM_COLS) | set(PLAYER_COLS))
     stats[num_cols] = stats[num_cols].fillna(0)
 
     rz, td_rates, epa = build_red_zone(season)
     if rz is not None:
         stats = stats.merge(rz, on=["game_id", "player_id"], how="left")
         stats[RZ_COLS] = stats[RZ_COLS].fillna(0)
+
+    stats, db_snaps = build_snaps(season, stats)
 
     schedule = build_schedule(games, season)
     team_games = build_team_games(stats, schedule)
@@ -492,6 +526,7 @@ def build_season(season: int, games: pd.DataFrame) -> dict | None:
         "player_games": player_games,
         "injuries": build_injuries(season),
         "td_rates": td_rates,
+        "db_snaps": db_snaps,
         "props": update_props(season, schedule, players),
         "line_history": update_line_history(season, schedule),
     }
@@ -502,7 +537,7 @@ def main() -> None:
     # NFL seasons start in September; Jan-Aug belongs to the previous season.
     current = this_year if dt.date.today().month >= 9 else this_year - 1
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--seasons", type=int, nargs="+", default=[current - 1, current])
+    parser.add_argument("--seasons", type=int, nargs="+", default=[current - 2, current - 1, current])
     args = parser.parse_args()
 
     games = pd.read_csv(io.BytesIO(fetch(SCHEDULE_URL, "games.csv", CACHE_HOURS)), low_memory=False)

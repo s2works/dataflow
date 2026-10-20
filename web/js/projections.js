@@ -78,6 +78,79 @@ export function buildProjector(sport, model, { history = [], weather = new Map()
   const xRec = (a) => (R ? (a.tgt_rz || 0) * R.rec.rz + Math.max(0, (a.tgt || 0) - (a.tgt_rz || 0)) * R.rec.out : null);
   const rowsAvg = (rows, k) => rows.reduce((s, r) => s + (r[k] || 0), 0) / (rows.length || 1);
 
+  // ---- baseline: recency-weighted sample + last season as a prior ---------
+  // Game i back (0 = latest) weighs decay^i; last season's per-game average
+  // counts as `priorGames` extra games. decay 1 / priorGames 0 = plain average.
+  const B = cfg.baseline;
+  const prevByPlayer = new Map();
+  for (const d of history) for (const r of d.player_games) {
+    if (!prevByPlayer.has(r.id)) prevByPlayer.set(r.id, []);
+    prevByPlayer.get(r.id).push(r);
+  }
+  const playerPos = new Map([...history, data].flatMap((d) => d.players.map((p) => [p.id, p.pos])));
+
+  // ---- yards per target vs depth of target -------------------------------
+  // League fit (players with 20+ targets): yards/target ≈ a + b × aDOT.
+  const E = cfg.efficiency;
+  const yptFit = (() => {
+    const agg = new Map();
+    for (const r of [...history.flatMap((d) => d.player_games), ...data.player_games.filter((x) => x.week < beforeWeek)]) {
+      if (!r.tgt) continue;
+      const a = agg.get(r.id) ?? { tgt: 0, yds: 0, air: 0 };
+      a.tgt += r.tgt; a.yds += r.rec_yds || 0; a.air += r.air || 0;
+      agg.set(r.id, a);
+    }
+    let sw = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (const a of agg.values()) {
+      if (a.tgt < 20) continue;
+      const x = a.air / a.tgt, y = a.yds / a.tgt, w = a.tgt;
+      sw += w; sx += w * x; sy += w * y; sxx += w * x * x; sxy += w * x * y;
+    }
+    if (!sw) return null;
+    const b = (sw * sxy - sx * sy) / (sw * sxx - sx * sx);
+    return { a: (sy - b * sx) / sw, b };
+  })();
+
+  // League yards per carry by position (for rushing efficiency regression).
+  const ypcLeague = (() => {
+    const agg = {};
+    for (const r of [...history.flatMap((d) => d.player_games), ...data.player_games.filter((x) => x.week < beforeWeek)]) {
+      const pos = playerPos.get(r.id);
+      if (!pos || !r.rush_att) continue;
+      const a = (agg[pos] ??= { att: 0, yds: 0 });
+      a.att += r.rush_att; a.yds += r.rush_yds || 0;
+    }
+    return Object.fromEntries(Object.entries(agg).map(([p, a]) => [p, a.yds / a.att]));
+  })();
+
+  function baselineAvg(pl) {
+    const rows = (logs.get(pl.id) || []).slice(0, pl.n);
+    const prev = prevByPlayer.get(pl.id) || [];
+    if (B.decay === 1 && (!B.priorGames || prev.length < B.minPriorGames)) return pl.avg;
+    const out = {};
+    let wSum = 0;
+    rows.forEach((r, i) => {
+      const w = B.decay ** i;
+      wSum += w;
+      for (const k of sport.rawColumns) out[k] = (out[k] || 0) + w * (r[k] || 0);
+    });
+    if (B.priorGames && prev.length >= B.minPriorGames) {
+      // Optionally rescale last season to this season's role: production per
+      // snap then × snap share now (capped), so a promoted backup isn't held
+      // to his old numbers.
+      let scale = 1;
+      if (B.priorPerSnap) {
+        const nowSnap = rowsAvg(rows.filter((r) => r.snap != null), 'snap');
+        const prevSnap = rowsAvg(prev.filter((r) => r.snap != null), 'snap');
+        if (nowSnap > 5 && prevSnap > 5) scale = Math.max(0.5, Math.min(2, nowSnap / prevSnap));
+      }
+      for (const k of sport.rawColumns) out[k] = (out[k] || 0) + B.priorGames * scale * rowsAvg(prev, k);
+      wSum += B.priorGames;
+    }
+    for (const k of sport.rawColumns) out[k] = wSum ? (out[k] || 0) / wSum : 0;
+    return sport.derive(out);
+  }
+
   // ---- injuries & vacated usage ------------------------------------------
   const I = cfg.injury;
   const report = new Map(); // player id -> injury report entry for this week
@@ -93,6 +166,40 @@ export function buildProjector(sport, model, { history = [], weather = new Map()
   const sampleGames = (p) => (logs.get(p.id) || []).slice(0, p.n).map((r) => r.game_id);
   const playedFor = (p) => new Set((logs.get(p.id) || []).filter((r) => r.team === p.team).map((r) => r.game_id));
   const meaningful = (p) => (p.avg.tgt || 0) >= 2 || (p.avg.rush_att || 0) >= 4 || (p.pos === 'QB' && p.avg.pass_att >= 15);
+
+  // ---- opponent secondary: starting DBs ruled out this week ---------------
+  const normName = (n) => String(n).toLowerCase().replace(/[.'’-]/g, '').replace(/\s+(jr|sr|ii|iii|iv|v)$/, '').trim();
+  const dbOut = new Map(); // team -> [names of starting DBs out]
+  {
+    const snaps = new Map(); // team|name -> [pct by week desc]
+    for (const [week, team, name, pct] of data.db_snaps || []) {
+      if (week >= beforeWeek) continue;
+      const k = `${team}|${normName(name)}`;
+      if (!snaps.has(k)) snaps.set(k, []);
+      snaps.get(k).push([week, pct]);
+    }
+    for (const r of data.injuries || []) {
+      if (r.week !== beforeWeek || r.pos !== 'DB' || !['Out', 'Doubtful'].includes(r.status)) continue;
+      const hist = (snaps.get(`${r.team}|${normName(r.name)}`) || []).sort((a, b) => b[0] - a[0]).slice(0, 3);
+      if (!hist.length) continue;
+      const avg = hist.reduce((s, x) => s + x[1], 0) / hist.length;
+      if (avg >= cfg.secondary.starterPct) {
+        if (!dbOut.has(r.team)) dbOut.set(r.team, []);
+        dbOut.get(r.team).push(r.name);
+      }
+    }
+  }
+
+  // ---- defenses: plays faced and pass rate faced (pace / pass funnel) ------
+  const defFaced = new Map(); // defense -> { plays, npass, nplays, games }
+  let lgPlays = 0, lgNpass = 0, lgNplays = 0, lgGames = 0;
+  for (const r of data.team_games) {
+    if (r.week >= beforeWeek || !r.plays) continue;
+    const d = defFaced.get(r.opp) ?? { plays: 0, npass: 0, nplays: 0, games: 0 };
+    d.plays += r.plays; d.npass += r.npass || 0; d.nplays += r.nplays || 0; d.games++;
+    defFaced.set(r.opp, d);
+    lgPlays += r.plays; lgNpass += r.npass || 0; lgNplays += r.nplays || 0; lgGames++;
+  }
 
   const contexts = new Map();
   function teamContext(team) {
@@ -180,11 +287,12 @@ export function buildProjector(sport, model, { history = [], weather = new Map()
     const keys = cfg.stats[pos];
     const isHome = g.home === pl.team;
     const opp = isHome ? g.away : g.home;
-    const base = Object.fromEntries(keys.map((k) => [k, pl.avg[k] || 0]));
+    const avg = baselineAvg(pl);
+    const base = Object.fromEntries(keys.map((k) => [k, avg[k] || 0]));
     // TD base: blend usage-based expected TDs with TDs actually scored.
     const TD = cfg.td;
-    const xr = xRush(pl.avg), xc = xRec(pl.avg);
-    if (R && pl.avg.car_gl != null) {
+    const xr = xRush(avg), xc = xRec(avg);
+    if (R && avg.car_gl != null) {
       if ('rush_td' in base) base.rush_td = TD.xWeight * xr + (1 - TD.xWeight) * base.rush_td;
       if ('rec_td' in base) base.rec_td = TD.xWeight * xc + (1 - TD.xWeight) * base.rec_td;
     }
@@ -239,6 +347,97 @@ export function buildProjector(sport, model, { history = [], weather = new Map()
           text: `Red-zone looks last ${TD.trendGames}: ${opp(recent).toFixed(1)}/G vs ${opp(sample).toFixed(1)} avg`,
           m: (k) => (k === 'rush_td' ? mR : k === 'rec_td' ? mC : 1),
         });
+      }
+    }
+
+    // 2b2. Yards per target regressed toward what his depth of target supports.
+    if (E.weight && yptFit && base.tgt > 0.5 && 'rec_yds' in base) {
+      const rows = [...(logs.get(pl.id) || []).slice(0, pl.n), ...(prevByPlayer.get(pl.id) || [])];
+      const tgt = rows.reduce((s, r) => s + (r.tgt || 0), 0);
+      const air = rows.reduce((s, r) => s + (r.air || 0), 0);
+      const yds = rows.reduce((s, r) => s + (r.rec_yds || 0), 0);
+      if (tgt >= 5) {
+        const exp = yptFit.a + yptFit.b * (air / tgt);
+        const obs = yds / tgt;
+        const reg = (tgt * obs + E.k * exp) / (tgt + E.k);
+        const now = base.rec_yds / base.tgt;
+        const m = clamp(1 + E.weight * (reg / now - 1), 0.75, 1.25);
+        factors.push({
+          id: 'ypt', label: 'Efficiency',
+          text: `${obs.toFixed(1)} yds/target vs ${exp.toFixed(1)} expected from ${(air / tgt).toFixed(1)}-yd depth`,
+          m: (k) => (k === 'rec_yds' ? m : 1),
+        });
+      }
+    }
+
+    // 2b2b. Yards per carry regressed toward the league rate for his position.
+    if (E.rushWeight && base.rush_att > 2 && 'rush_yds' in base && ypcLeague[pl.pos]) {
+      const rows = [...(logs.get(pl.id) || []).slice(0, pl.n), ...(prevByPlayer.get(pl.id) || [])];
+      const att = rows.reduce((s, r) => s + (r.rush_att || 0), 0);
+      const yds = rows.reduce((s, r) => s + (r.rush_yds || 0), 0);
+      if (att >= 10) {
+        const reg = (yds + E.rushK * ypcLeague[pl.pos]) / (att + E.rushK);
+        const now = base.rush_yds / base.rush_att;
+        const m = clamp(1 + E.rushWeight * (reg / now - 1), 0.8, 1.2);
+        factors.push({
+          id: 'ypc', label: 'Rush efficiency',
+          text: `${(yds / att).toFixed(1)} yds/carry vs ${ypcLeague[pl.pos].toFixed(1)} league (${pl.pos})`,
+          m: (k) => (k === 'rush_yds' ? m : 1),
+        });
+      }
+    }
+
+    // 2b3. Opponent's starting cornerbacks/safeties out.
+    {
+      const out = dbOut.get(opp) || [];
+      const D = cfg.secondary;
+      if (D.perStarter && out.length && pl.pos !== 'RB' && (!D.qbOnly || pl.pos === 'QB')) {
+        const m = 1 + D.perStarter * Math.min(out.length, D.max);
+        factors.push({
+          id: 'secondary', label: 'Secondary out',
+          text: `${opp} without starting DB${out.length > 1 ? 's' : ''} ${out.join(', ')}`,
+          m: (k) => (['tgt', 'rec', 'rec_yds', 'rec_td', 'pass_yds', 'pass_td'].includes(k) ? m : k === 'int' ? 1 / m : 1),
+        });
+      }
+    }
+
+    // 2b4. Opponent pace (plays faced) and pass funnel (neutral pass rate faced).
+    {
+      const P = cfg.pace;
+      const d = defFaced.get(opp);
+      if ((P.volume || P.tilt) && d?.games && lgGames) {
+        const shrink = d.games / (d.games + P.k);
+        const vol = 1 + P.volume * shrink * ((d.plays / d.games) / (lgPlays / lgGames) - 1);
+        const prFaced = d.nplays ? d.npass / d.nplays : null;
+        const prLg = lgNplays ? lgNpass / lgNplays : null;
+        const tilt = prFaced && prLg ? P.tilt * shrink * (prFaced / prLg - 1) : 0;
+        const passM = vol * (1 + tilt), rushM = (P.passOnly ? 1 : vol) * (1 - tilt);
+        if (Math.abs(passM - 1) > 0.005 || Math.abs(rushM - 1) > 0.005) {
+          factors.push({
+            id: 'pace', label: 'Pace / funnel',
+            text: `${opp} faces ${(d.plays / d.games).toFixed(0)} plays/G (lg ${(lgPlays / lgGames).toFixed(0)}), ${prFaced ? (prFaced * 100).toFixed(0) : '–'}% passes in close games (lg ${prLg ? (prLg * 100).toFixed(0) : '–'}%)`,
+            m: (k) => (cat(k) === 'pass' ? passM : cat(k) === 'rush' || k === 'rush_td' ? rushM : 1),
+          });
+        }
+      }
+    }
+
+    // 2c. Snap-share trend: playing time over the last games vs his sample
+    // (role changes show up in snaps before they show up in stats).
+    {
+      const S = cfg.snaps;
+      const rows = (logs.get(pl.id) || []).filter((r) => r.snap != null);
+      if (S.weight && pl.pos !== 'QB' && rows.length > S.games) {
+        const recent = rowsAvg(rows.slice(0, S.games), 'snap');
+        const all = rowsAvg(rows.slice(0, pl.n), 'snap');
+        if (all > 5) {
+          const m = clamp(1 + S.weight * (recent / all - 1), 1 - S.cap, 1 + S.cap);
+          factors.push({
+            id: 'snaps', label: 'Snap trend',
+            text: `Snaps last ${S.games}: ${recent.toFixed(0)}% vs ${all.toFixed(0)}% avg`,
+            m: (k) => (k === 'pass_att' || k === 'pass_yds' || k === 'pass_td' || k === 'int' ? 1 : m),
+          });
+        }
       }
     }
 
@@ -316,7 +515,13 @@ export function buildProjector(sport, model, { history = [], weather = new Map()
         const vs = prior.reduce((s, r) => s + fptsOf(r, keys), 0) / prior.length;
         const H = cfg.history;
         const m = clamp(regress(vs / baseF, prior.length, cfg.regress.history), 1 - H.cap, 1 + H.cap);
-        factors.push({ id: 'hist', label: `vs ${opp}`, text: `${prior.length} prior game${prior.length > 1 ? 's' : ''} vs ${opp}: ${vs.toFixed(1)} FPTS/G`, m: () => m });
+        // Shown for context; only weighted in when history.apply is on (with
+        // three seasons loaded, backtests found it hurt every stat).
+        factors.push({
+          id: 'hist', label: `vs ${opp}`,
+          text: `${prior.length} prior game${prior.length > 1 ? 's' : ''} vs ${opp}: ${vs.toFixed(1)} FPTS/G${H.apply ? '' : ' (context only)'}`,
+          m: () => (H.apply ? m : 1),
+        });
       }
     }
 

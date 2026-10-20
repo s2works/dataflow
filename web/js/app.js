@@ -437,6 +437,7 @@ function gameProjectionCard(g) {
     <tr><td class="l">Score</td><td>${g.away} ${p.ptsAway.toFixed(1)} – ${g.home} ${p.ptsHome.toFixed(1)}</td><td>${hasLine ? `${g.away} ${vegasAway.toFixed(1)} – ${g.home} ${vegasHome.toFixed(1)}` : '–'}</td><td class="l muted">Vegas score = implied by spread + total</td></tr>
     <tr><td class="l">Spread</td><td>${fmtSpread(g, p.margin)}</td><td>${hasLine ? spreadText(g, g.spread_line) : '–'}</td><td class="l">${lean(sDiff, `${g.home} side`, `${g.away} side`, ats)}</td></tr>
     <tr><td class="l">Total</td><td>${p.total.toFixed(1)}</td><td>${g.total_line ?? '–'}</td><td class="l">${lean(tDiff, 'Over', 'Under', ou)}</td></tr>
+    ${p.qbOutHome || p.qbOutAway ? `<tr><td class="l">QB out</td><td colspan="3" class="l">${esc(p.qbOutHome || p.qbOutAway)} (${p.qbOutHome ? g.home : g.away}) ruled out: model takes ${sport.projection.game.qbDrop} pts off that offense (teams without their starter scored ~2.8 below the model in backtests)</td></tr>` : ''}
     <tr><td class="l">Win %</td><td>${g.home} ${pctFmt(p.pHome)}</td><td>${mkt != null ? `${g.home} ${pctFmt(mkt)}` : '–'}</td><td class="l muted">Vegas = moneyline with the vig removed</td></tr>
     ${played}`;
   const r = gameRecord;

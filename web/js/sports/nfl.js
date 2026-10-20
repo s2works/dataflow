@@ -124,7 +124,7 @@ export default {
     // Weights below were tuned by backtesting 2025 wks 4-18 + 2026 (see README).
     regress: { opponent: 30, opponentTd: 60, history: 8 },
     recentForm: { games: 3, weight: 0.15, cap: 0.15 },
-    history: { cap: 0.12 },
+    history: { cap: 0.12, apply: false },
     vegas: { yardsWeight: 0.5, tdWeight: 0.8, cap: 0.1 },
     gameScript: { rushPerPoint: 0.008, passPerPoint: -0.004, cap: 0.08 },
     rest: { perDay: 0.004, maxDays: 7 },
@@ -139,6 +139,20 @@ export default {
     // the projection absorb (the rest goes to depth players), extra weight for
     // the same position, backup-QB hit on pass catchers, Questionable haircut.
     injury: { absorb: 0.7, samePosWeight: 1.5, backupQb: 0.9, questionable: 0.95, cap: 1.6 },
+    // Baseline: recency decay per game back, and last season's per-game
+    // average counted as `priorGames` games (when he played minPriorGames+).
+    baseline: { decay: 1, priorGames: 3, minPriorGames: 4, priorPerSnap: false },
+    // Yards per target regressed toward the league fit on depth of target
+    // (k = pseudo-targets at the expected rate).
+    efficiency: { weight: 0.5, k: 60, rushWeight: 0, rushK: 100 },
+    // Opponent's starting DBs (avg ≥ starterPct of snaps, last 3 games) ruled
+    // Out/Doubtful: passing-game boost per starter, up to `max`.
+    secondary: { perStarter: 0.04, max: 2, starterPct: 70, qbOnly: true },
+    // Opponent pace / pass funnel: volume weight on plays faced vs league,
+    // tilt weight on neutral pass rate faced; regressed by games (k).
+    pace: { volume: 0.5, tilt: 0, k: 6, passOnly: true },
+    // Snap-share trend: last `games` snap % vs sample, applied to volume.
+    snaps: { weight: 0, games: 2, cap: 0.3 },
     // Touchdowns. Base = xWeight × expected TDs from usage (goal-line / red-zone
     // carries and targets × league TD rate per opportunity) + the rest from TDs
     // actually scored. Red-zone trend compares recent usage to the sample.
@@ -153,7 +167,7 @@ export default {
     q1: { kPlayer: 30, kTeam: 30, kDefense: 30 },
     // Game model: ridge = pseudo-games pulling ratings to average, priorWeight =
     // weight of last season's games, SDs of margin/total around projections.
-    game: { ridge: 6, priorWeight: 0.25, epaWeight: 0.5, epaScale: 0.7, marginSd: 14, totalSd: 13 },
+    game: { ridge: 6, priorWeight: 0.25, epaWeight: 0.5, epaScale: 0.7, epaFiltered: true, qbDrop: 2.5, marginSd: 14, totalSd: 13 },
     totalClamp: [0.6, 1.6],
   },
 

@@ -69,7 +69,11 @@ export function buildGameModel(sport, data, { beforeWeek = Infinity, history = [
   // EPA per play, as points: (EPA/play above average) × plays per game.
   const epaRows = [];
   const addEpa = (rows, w) => {
-    for (const r of rows) if (r.plays) epaRows.push({ off: r.team, def: r.opp, y: r.epa / r.plays, w, s: 0, plays: r.plays });
+    for (const r of rows) {
+      // Optionally only competitive plays (win prob 10–90%): no garbage time.
+      const [e, n] = C.epaFiltered && r.plays_f ? [r.epa_f, r.plays_f] : [r.epa, r.plays];
+      if (n) epaRows.push({ off: r.team, def: r.opp, y: e / n, w, s: 0, plays: n });
+    }
   };
   for (const d of history) addEpa(d.team_games, C.priorWeight);
   addEpa(data.team_games.filter((r) => r.week < beforeWeek), 1);
@@ -85,13 +89,34 @@ export function buildGameModel(sport, data, { beforeWeek = Infinity, history = [
     D[t] = (1 - a) * pts.d[t] + a * (epa ? epa.d[t] * playsPerGame * C.epaScale : 0);
   }
 
+  // ---- starting QB out ------------------------------------------------------
+  // Starter = the QB with the most attempts in the team's latest game. If he's
+  // Out/Doubtful on this week's report, the offense loses C.qbDrop points.
+  const starter = new Map();
+  {
+    const latest = new Map(); // team -> week
+    for (const r of data.player_games) if (r.week < beforeWeek && r.pass_att) latest.set(r.team, Math.max(latest.get(r.team) ?? 0, r.week));
+    for (const r of data.player_games) {
+      if (r.week !== latest.get(r.team) || !r.pass_att) continue;
+      const cur = starter.get(r.team);
+      if (!cur || r.pass_att > cur.att) starter.set(r.team, { id: r.id, att: r.pass_att });
+    }
+  }
+  const outIds = new Set((data.injuries || []).filter((r) => r.week === beforeWeek && ['Out', 'Doubtful'].includes(r.status)).map((r) => r.id));
+  const names = new Map(data.players.map((p) => [p.id, p.name]));
+  const qbOut = (team) => {
+    const st = starter.get(team);
+    return st && outIds.has(st.id) ? names.get(st.id) ?? 'starting QB' : null;
+  };
+
   function predict(g) {
     const s = g.location === 'Neutral' ? 0 : hfa / 2;
-    const ptsHome = mu + O[g.home] + D[g.away] + s;
-    const ptsAway = mu + O[g.away] + D[g.home] - s;
+    const outHome = qbOut(g.home), outAway = qbOut(g.away);
+    const ptsHome = mu + O[g.home] + D[g.away] + s - (outHome ? C.qbDrop : 0);
+    const ptsAway = mu + O[g.away] + D[g.home] - s - (outAway ? C.qbDrop : 0);
     const margin = ptsHome - ptsAway; // + = home wins by
     return {
-      ptsHome, ptsAway, margin,
+      ptsHome, ptsAway, margin, qbOutHome: outHome, qbOutAway: outAway,
       total: ptsHome + ptsAway,
       pHome: normCdf(margin / C.marginSd),
       // P(home covers the market spread) and P(over the market total), for edges.

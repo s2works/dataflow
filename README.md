@@ -46,9 +46,12 @@ percentages shown in **Why**.
 | Divisional game | League-wide divisional vs non-divisional production (from the data). |
 | Game script | Favorites run more, underdogs throw more (spread ≥ 3). |
 | Rest | Days of rest vs the opponent (bye weeks, short weeks). |
-| History vs opponent | The player's past games against this team (this and last season), regressed. |
+| History vs opponent | The player's past games against this team. Shown as context only: it hurt accuracy once three seasons were loaded. |
 | Recent form | Last 3 games vs the sample average. |
 | Home / road | Shown, but only applied when there's no Vegas line. Backtests showed the line already prices it in. |
+| Efficiency | Yards per target pulled toward what his depth of target supports. |
+| Secondary out | QBs facing a defense missing starting corners/safeties. |
+| Pace | Opponents that face more plays per game boost the passing game. |
 | Teammates out | Players ruled **Out/Doubtful** on the official injury report hand their targets (to all pass catchers) and carries (to RBs) to teammates, weighted toward the same position; 70% is absorbed by the players shown, the rest by depth guys. Only the part of a teammate's sample where the injured player actually played counts. Depth players who become starters show up automatically. |
 | QB change | If the starting QB is out, the backup is projected as the starter and his pass catchers take a 10% passing hit. |
 | Questionable | −5% for the player himself. |
@@ -61,6 +64,33 @@ score more (10.9 actual vs 10.1 average; projected 10.8), which RMSE rewards;
 MAE penalizes any upward shift on right-skewed fantasy scores, so check both. Fantasy points are noisy; treat projections as a
 tiebreaker and context, not a lock. All weights live in
 `web/js/sports/nfl.js` → `projection`; re-run the backtest after changing them.
+
+### Accuracy upgrades (Oct 2026): what was added and what was tested
+
+Each idea was added as its own switchable factor in `web/js/sports/nfl.js`
+and backtested alone on the same 2025–26 games (each season using the one
+before it as history). Kept only if it helped; the rest stay in the code,
+switched off, so they can be re-tested as the season fills in.
+
+| Factor | Result | Status |
+| --- | --- | --- |
+| **Last season as a prior** (3 games' worth, fades as this season's games add up) | 2026 fantasy MAE 5.79 → 5.65; helps TDs too | **on** (`baseline.priorGames`) |
+| **Yards/target vs depth of target** (regress toward aDOT-based expectation) | rec yds RMSE 28.0 → 27.9; aDOT predicts future YPT better than past YPT | **on**, half weight (`efficiency`) |
+| **Opponent's starting DBs out** (from injury report + DB snap shares) | pass yds better (fires in ~22% of QB games); receivers individually didn't benefit | **on for QBs** (`secondary`) |
+| **Opponent pace** (plays faced vs league) | pass yds 61.5 → 61.3 MAE | **on, passing only** (`pace.volume`) |
+| **Game model: garbage-time-filtered EPA** (win prob 10–90%) | small gain on margin and total | **on** (`game.epaFiltered`) |
+| **Game model: starting QB out** | teams without their starter scored 2.8 below the model; Vegas already prices it | **on**, 2.5 pts (`game.qbDrop`) |
+| Recency weighting of recent games | worse on its own | off (`baseline.decay`) |
+| Snap-share trend / prior rescaled by snap share | worse (recent form already covers it) | off (`snaps`, `baseline.priorPerSnap`) |
+| Pass-funnel tilt (pass rate faced) | worse | off (`pace.tilt`) |
+| Yards/carry regression | rush yds a hair better, fantasy pts worse | off (`efficiency.rushWeight`) |
+| Next Gen Stats (RYOE, separation, YAC over expected) | ~0 correlation with future efficiency (≤ 2% extra R²) | not loaded |
+| Player history vs this opponent | with 3 seasons loaded it hurt every stat | **context only** (`history.apply`) |
+
+Same 2025–26 games, before → after: fantasy MAE 5.567 → 5.535, RMSE
+7.199 → 7.110; pass yds RMSE 79.6 → 78.0; rec yds 29.0 → 27.9; receptions
+2.19 → 2.13; anytime-TD log loss 0.5494 → 0.5476. The pipeline now also builds
+2024 so 2025 has a prior and every backtest/calibration has a third season.
 
 ### Touchdowns tab
 
