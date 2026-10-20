@@ -44,7 +44,9 @@ a { color: var(--accent); }
   background: var(--panel); border-bottom: 1px solid var(--line);
 }
 .brand { font-weight: 700; font-size: 16px; }
-.sport-tag { font-size: 11px; padding: 2px 6px; border-radius: 4px; background: var(--accent); color: #fff; margin-left: 4px; vertical-align: middle; }
+.sport-switch { display: inline-flex; margin-left: 6px; vertical-align: middle; border: 1px solid var(--accent); border-radius: 5px; overflow: hidden; }
+.sport-switch a { font-size: 11px; font-weight: 700; padding: 2px 7px; text-decoration: none; color: var(--accent); }
+.sport-switch a.on { background: var(--accent); color: #fff; }
 .tabs { display: flex; gap: 4px; flex-wrap: wrap; }
 .tabs a { padding: 6px 10px; border-radius: 6px; text-decoration: none; color: var(--muted); font-weight: 500; }
 .tabs a.on { background: var(--bg); color: var(--ink); }

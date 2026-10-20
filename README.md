@@ -4,6 +4,12 @@ A matchup dashboard for finding statistical edges in pro sports. NFL first;
 the structure is built so other sports can be added by copying one pipeline
 script and one sport config.
 
+## Sports
+
+Switch sport with the **NFL / NHL** toggle next to the logo (remembered per
+browser; `?sport=nhl` links straight to it). The NFL is documented first;
+the NHL section is below.
+
 ## What it shows
 
 | Tab | What you get |
@@ -340,3 +346,43 @@ tools/fit_boom_bust.mjs   boom/bust calibration + angle records (refit by the re
 tools/fit_game_model.mjs  game model record vs results and Vegas (refit by the refresh job)
 web/data/nfl/             generated JSON (committed)
 ```
+
+## NHL
+
+Data: [sportsdataverse/fastRhockey-nhl-data](https://github.com/sportsdataverse/fastRhockey-nhl-data)
+(free, updated nightly from the NHL's API): schedule plus team, skater and
+goalie box scores. `pipeline/build_nhl.py` writes `web/data/nhl/<season>.json`
+(season = start year; the last three are built for priors and backtests).
+NHL plays almost daily, so the date picker selects a **game day** instead of
+a week. There are **no free NHL betting lines or injury feed**, so the game
+model stands on its own (judged against results) and goalies are *probable*.
+
+| Tab | What you get |
+| --- | --- |
+| **Matchups** | Day preview cards: model win % bar, upset chance, projected score, total goals (over 5.5 / 6.5), puck line, probable goalies with projected saves, top 3 skaters (chance of a point, projected shots). Upset watch banner. Click a game for the full projection, skater props and team matchup. |
+| **Player Props** | Skaters: shots on goal (chance of 2+ … 5+), points (1+ with fair odds, 2+), anytime goal, assist, blocked shots, with the top reasons. Goalie saves view: probable starter, why, shots against × save %, chances at three lines. |
+| **Defense vs Position** | What each team allows per game to centers, wingers and defensemen (points, goals, assists, shots, blocks), plus shots and goals allowed. |
+| **Team Rankings** | Offense/defense ranks (goals, shots, shooting %, PP goals, hits, faceoffs) and a Power rating. |
+
+**Models** (`web/js/nhl/model.js`, settings in `web/js/sports/nhl.js`,
+backtest `node tools/nhl_backtest.mjs [--fit]`; 2025-26 and 2026-27 game
+days, each projected from earlier games only, ~21,600 skater-games):
+
+* **Skaters:** season average with last season counted as 25 games ×
+  opponent vs position (shots and blocks only: it hurt points/assists) ×
+  home ice × opposing probable goalie's save % (scoring) × ice-time trend
+  (last 3 games; line/PP promotions show up in minutes first). Each stat has
+  its own backtested spread. Calibration: shots 2.5+ predicted 41% → 41%,
+  56% → 57%; 1+ point 42% → 43%; anytime goal 26% → 26%; 1+ assist
+  41% → 41%; blocks 1.5+ 42% → 40%. Back-to-backs tested: no effect.
+* **Goalies:** probable starter = most starts in the last 10, or the backup
+  on the second night of a back-to-back if the starter played yesterday:
+  right 64% of the time (vs 57% for "most recent starts"). Saves = shots
+  against (opponent volume × team suppression × venue, regressed) × save %
+  (regressed by shots faced); MAE 5.5 vs 5.7 for the goalie's own average.
+* **Games:** opponent-adjusted goal and shot ratings (50/50), home ice,
+  probable-goalie adjustment (half weight), Poisson goals per side, ties to
+  overtime with a small home edge, squeezed 30% toward 50/50 (raw was
+  overconfident). Win % log loss 0.685 vs 0.691 for "home team always 54%";
+  total goals MAE 1.80 vs 1.83. The model's favorite lost **46%** of games:
+  hockey is close to a coin flip, so the cards always show the upset chance.

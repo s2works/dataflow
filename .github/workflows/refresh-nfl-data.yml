@@ -1,10 +1,11 @@
-name: Refresh NFL data
+name: Refresh data
 
 on:
   schedule:
-    # Every 2 hours, September through February. Each run also snapshots the
-    # betting lines, so this cadence is the resolution of line-movement history.
-    - cron: "17 */2 * 9-12,1-2 *"
+    # Every 2 hours, September through June (NFL Sept-Feb, NHL Oct-June).
+    # Each run also snapshots NFL betting lines, so this cadence is the
+    # resolution of line-movement history.
+    - cron: "17 */2 * 1-6,9-12 *"
   workflow_dispatch:
 
 permissions:
@@ -36,6 +37,8 @@ jobs:
       - run: node tools/fit_prop_dist.mjs
       - run: node tools/fit_boom_bust.mjs
       - run: node tools/fit_game_model.mjs
+      - run: python pipeline/build_nhl.py
+      - run: node tools/nhl_backtest.mjs --fit
       - name: Commit updated data
         run: |
           if [ -z "$(git status --porcelain -- web/data)" ]; then
@@ -44,6 +47,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add web/data
-          git commit -m "Refresh NFL data"
+          git commit -m "Refresh data"
           git pull --rebase origin "${GITHUB_REF_NAME}"
           git push

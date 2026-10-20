@@ -1,0 +1,352 @@
+// NHL models: skater props, goalie saves and game projections.
+//
+// Skaters: projection = baseline × Π(factors), per stat (shots, points, goals,
+// assists, blocks). Baseline = this season's per-game average with last
+// season counted as `priorGames` extra games. Factors: opponent allowance to
+// the position (regressed), home ice, the opposing probable goalie's save %,
+// back-to-back, ice-time trend. Each factor's impact is reported for the UI.
+//
+// Goalies: saves = projected shots against × save %, where shots against
+// blends the opponent's shot volume with this team's shot suppression and the
+// save % is regressed toward league average by shots faced.
+//
+// Games: opponent-adjusted goal and shot ratings → expected goals per side
+// (Poisson) → win % (ties to overtime with a small home edge), total goals,
+// puck line.
+
+import { nbAtLeast } from '../props.js';
+
+const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+const regress = (m, n, k) => 1 + (m - 1) * (n / (n + k));
+const avgOf = (rows, k) => rows.reduce((s, r) => s + (r[k] || 0), 0) / (rows.length || 1);
+
+// ---- shared context: logs, goalies, league rates -----------------------------
+function context(sport, model, history) {
+  const data = model.data;
+  const beforeWeek = model.beforeWeek;
+  const logs = new Map();
+  for (const r of data.player_games) {
+    if (r.week >= beforeWeek) continue;
+    if (!logs.has(r.id)) logs.set(r.id, []);
+    logs.get(r.id).push(r);
+  }
+  for (const rows of logs.values()) rows.sort((a, b) => b.week - a.week);
+  const prev = new Map();
+  for (const d of history) for (const r of d.player_games) {
+    if (!prev.has(r.id)) prev.set(r.id, []);
+    prev.get(r.id).push(r);
+  }
+
+  // Team games this season before the cutoff.
+  const tg = data.team_games.filter((r) => r.week < beforeWeek);
+  const lg = { gf: 0, sog: 0, games: 0, homeGf: 0, homeN: 0, homeSog: 0 };
+  for (const r of tg) {
+    lg.gf += r.gf; lg.sog += r.sog; lg.games++;
+    if (r.home) { lg.homeGf += r.gf; lg.homeSog += r.sog; lg.homeN++; }
+  }
+  // Fall back to last season early on.
+  const lgRows = lg.games >= 64 ? tg : [...tg, ...history.flatMap((d) => d.team_games)];
+  const L = lgRows.reduce((a, r) => {
+    a.gf += r.gf; a.sog += r.sog; a.n++;
+    if (r.home) { a.hgf += r.gf; a.hsog += r.sog; a.hn++; }
+    return a;
+  }, { gf: 0, sog: 0, n: 0, hgf: 0, hsog: 0, hn: 0 });
+  const league = {
+    gf: L.gf / L.n, sog: L.sog / L.n,
+    homeGf: L.hn ? L.hgf / L.hn / (L.gf / L.n) : 1,
+    homeSog: L.hn ? L.hsog / L.hn / (L.sog / L.n) : 1,
+  };
+  league.awayGf = 2 - league.homeGf;
+  league.awaySog = 2 - league.homeSog;
+
+  // Goalies: save % (this + last season) and probable starters.
+  const goalieRows = [...history.flatMap((d) => d.goalie_games || []), ...(data.goalie_games || []).filter((r) => r.week < beforeWeek)];
+  const gSum = new Map();
+  let lgSa = 0, lgSv = 0;
+  for (const r of goalieRows) {
+    const s = gSum.get(r.id) ?? { sa: 0, sv: 0, starts: 0 };
+    s.sa += r.sa || 0; s.sv += r.saves || 0; if (r.starter) s.starts++;
+    gSum.set(r.id, s);
+    lgSa += r.sa || 0; lgSv += r.saves || 0;
+  }
+  const lgSvPct = lgSa ? lgSv / lgSa : 0.9;
+  const S = sport.projection.saves;
+  const svPct = (id) => {
+    const s = gSum.get(id) ?? { sa: 0, sv: 0 };
+    return (s.sv + S.kShots * lgSvPct) / (s.sa + S.kShots);
+  };
+  const names = new Map([...history, data].flatMap((d) => d.players.map((p) => [p.id, p.name])));
+  // Probable starter: most starts in the team's last 10 games; on the second
+  // night of a back-to-back, if he started yesterday, the team's other most-
+  // used goalie. Right ~64% of the time in 2025-26 backtests (teams rotate),
+  // so the UI labels it "probable, not confirmed".
+  const starts = new Map();
+  const gameDate = new Map(data.schedule.map((g) => [g.game_id, g.gameday]));
+  for (const r of (data.goalie_games || []).filter((x) => x.week < beforeWeek && x.starter)) {
+    if (!starts.has(r.team)) starts.set(r.team, []);
+    starts.get(r.team).push(r);
+  }
+  for (const rows of starts.values()) rows.sort((a, b) => b.week - a.week);
+  const mostStarts = (rows) => {
+    const count = new Map();
+    rows.forEach((r, i) => count.set(r.id, (count.get(r.id) || 0) + 1 + (rows.length - i) * 0.001));
+    return [...count.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
+  };
+  const probable = (team, g = null) => {
+    const all = starts.get(team) || [];
+    const rows = all.slice(0, 10);
+    if (!rows.length) return null;
+    let id = mostStarts(rows)[0];
+    let reason = `${rows.filter((r) => r.id === id).length} of last ${rows.length} starts`;
+    if (g && b2b(team, g) && rows[0].id === id) {
+      const other = mostStarts(all).find((x) => x !== id);
+      if (other) { reason = `${names.get(id) ?? 'The starter'} played yesterday (back-to-back), so likely the backup`; id = other; }
+    }
+    return { id, name: names.get(id) ?? 'Goalie', sv: svPct(id), reason, starts: rows.filter((r) => r.id === id).length, of: rows.length };
+  };
+
+  // Back-to-back: team played the previous calendar day.
+  const dayOf = data.days || {};
+  const playedDates = new Map(); // team -> Set(date)
+  for (const g of data.schedule) {
+    for (const t of [g.home, g.away]) {
+      if (!playedDates.has(t)) playedDates.set(t, new Set());
+      playedDates.get(t).add(g.gameday);
+    }
+  }
+  const b2b = (team, g) => {
+    const d = new Date(`${g.gameday}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - 1);
+    return playedDates.get(team)?.has(d.toISOString().slice(0, 10)) ?? false;
+  };
+
+  // Team shots for / against per game (for goalie saves and the game model).
+  const teamShots = new Map();
+  for (const r of tg) {
+    const s = teamShots.get(r.team) ?? { sf: 0, sa: 0, gf: 0, ga: 0, n: 0 };
+    s.sf += r.sog; s.sa += r.sa; s.gf += r.gf; s.ga += r.ga; s.n++;
+    teamShots.set(r.team, s);
+  }
+
+  return { data, beforeWeek, logs, prev, league, lgSvPct, svPct, probable, b2b, teamShots, names, dayOf };
+}
+
+// ---- skaters -------------------------------------------------------------------
+export function buildNhlProjector(sport, model, { history = [], disabled = new Set() } = {}) {
+  const P = sport.projection;
+  const ctx = context(sport, model, history);
+  const statKeys = Object.keys(P.markets);
+
+  function baseline(pl) {
+    const rows = (ctx.logs.get(pl.id) || []).slice(0, pl.n);
+    const prev = ctx.prev.get(pl.id) || [];
+    const out = {};
+    let w = rows.length;
+    for (const k of sport.rawColumns) out[k] = rows.reduce((s, r) => s + (r[k] || 0), 0);
+    if (P.baseline.priorGames && prev.length >= P.baseline.minPriorGames) {
+      for (const k of sport.rawColumns) out[k] += P.baseline.priorGames * avgOf(prev, k);
+      w += P.baseline.priorGames;
+    }
+    for (const k of sport.rawColumns) out[k] = w ? out[k] / w : 0;
+    return out;
+  }
+
+  function project(pl, g) {
+    const isHome = g.home === pl.team;
+    const opp = isHome ? g.away : g.home;
+    const base = baseline(pl);
+    const factors = [];
+    const scoring = (k) => k === 'g' || k === 'a' || k === 'pts';
+
+    // Opponent's allowance to this position, per stat.
+    if (!disabled.has('opp')) {
+      const n = model.team[opp]?.n ?? 0;
+      const mult = {};
+      for (const k of statKeys) {
+        const s = model.posStat(opp, pl.pos, k, 'def');
+        const raw = s.leagueAvg > 0.01 ? s.value / s.leagueAvg : 1;
+        // Only for stats where backtests showed it helps (P.opponentStats).
+        mult[k] = P.opponentStats.includes(k) ? 1 + P.opponentWeight * (regress(raw, n, P.regress.opponent) - 1) : 1;
+      }
+      const sp = model.posStat(opp, pl.pos, 'pts', 'def');
+      const ss = model.posStat(opp, pl.pos, 'sog', 'def');
+      factors.push({
+        id: 'opp', label: 'Opponent',
+        text: `${opp} vs ${pl.pos}: ${ss.value?.toFixed(1)} SOG/G (${rankWord(model, ss.rank)})`,
+        m: (k) => mult[k] ?? 1,
+      });
+    }
+
+    // Home ice.
+    if (!disabled.has('home') && P.homeWeight) {
+      const gfm = isHome ? ctx.league.homeGf : ctx.league.awayGf;
+      const sm = isHome ? ctx.league.homeSog : ctx.league.awaySog;
+      factors.push({
+        id: 'home', label: isHome ? 'Home' : 'Road', text: isHome ? 'Home ice' : 'Road game',
+        m: (k) => 1 + P.homeWeight * ((scoring(k) ? gfm : k === 'sog' ? sm : 1) - 1),
+      });
+    }
+
+    // Opposing probable goalie.
+    const og = ctx.probable(opp, g);
+    if (!disabled.has('goalie') && og && P.goalieWeight) {
+      const m = clamp(((1 - og.sv) / (1 - ctx.lgSvPct)) ** P.goalieWeight, 0.75, 1.3);
+      factors.push({
+        id: 'goalie', label: 'Opp goalie',
+        text: `vs ${og.name} (${(og.sv * 100).toFixed(1)}% sv)`,
+        m: (k) => (scoring(k) ? m : 1),
+      });
+    }
+
+    // Second night of a back-to-back.
+    if (!disabled.has('b2b') && P.b2bWeight && ctx.b2b(pl.team, g)) {
+      const m = 1 - P.b2bWeight;
+      factors.push({ id: 'b2b', label: 'Back-to-back', text: `${pl.team} played yesterday`, m: () => m });
+    }
+
+    // Ice-time trend (line / power-play promotions show up in TOI first).
+    if (!disabled.has('toi') && P.toiTrend.weight) {
+      const rows = ctx.logs.get(pl.id) || [];
+      if (rows.length > P.toiTrend.games) {
+        const recent = avgOf(rows.slice(0, P.toiTrend.games), 'toi');
+        const all = avgOf(rows.slice(0, pl.n), 'toi');
+        if (all > 5) {
+          const m = clamp(1 + P.toiTrend.weight * (recent / all - 1), 1 - P.toiTrend.cap, 1 + P.toiTrend.cap);
+          factors.push({ id: 'toi', label: 'Ice time', text: `TOI ${recent.toFixed(1)} last ${P.toiTrend.games} (avg ${all.toFixed(1)})`, m: (k) => (k === 'toi' ? 1 : m) });
+        }
+      }
+    }
+
+    const combine = (skip) => Object.fromEntries(statKeys.map((k) => {
+      let m = 1;
+      for (const f of factors) if (f !== skip) m *= f.m(k);
+      return [k, base[k] * clamp(m, 0.5, 1.8)];
+    }));
+    const proj = combine(null);
+    for (const f of factors) {
+      const w = combine(f);
+      f.impact = w.pts > 0 ? proj.pts / w.pts - 1 : 0;
+      f.impactSog = w.sog > 0 ? proj.sog / w.sog - 1 : 0;
+    }
+    const probs = {};
+    for (const [k, mk] of Object.entries(P.markets)) probs[k] = mk.lines.map((line) => nbAtLeast(proj[k], mk.r, Math.floor(line) + 1));
+    return { opp, isHome, game: g, base, proj, probs, factors, oppGoalie: og, toi: base.toi };
+  }
+
+  return { project, ctx };
+}
+
+function rankWord(model, rank) {
+  if (rank == null) return '';
+  const most = model.N - rank + 1;
+  return most <= model.N / 2 ? `${ordinal(most)}-most` : `${ordinal(rank)}-fewest`;
+}
+const ordinal = (n) => { const s = ['th', 'st', 'nd', 'rd'], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); };
+
+// ---- goalies ---------------------------------------------------------------------
+export function goalieSaves(sport, ctx, team, opp, isHome, game = null) {
+  const S = sport.projection.saves;
+  const g = ctx.probable(team, game);
+  if (!g) return null;
+  const lgS = ctx.league.sog;
+  const reg = (s, key) => (s ? (s[key] + S.kGames * lgS) / (s.n + S.kGames) : lgS);
+  const oppSf = reg(ctx.teamShots.get(opp), 'sf'); // shots the opponent takes
+  const ownSa = reg(ctx.teamShots.get(team), 'sa'); // shots this team allows
+  const home = isHome ? ctx.league.awaySog : ctx.league.homeSog; // opponent's venue effect
+  const sa = lgS * (oppSf / lgS) * (ownSa / lgS) * home;
+  const saves = sa * g.sv;
+  const lines = [-2, 0, 2].map((d) => Math.floor(saves + d) + 0.5);
+  return {
+    ...g, sa, saves,
+    probs: lines.map((line) => ({ line, p: nbAtLeast(saves, S.r, Math.floor(line) + 1) })),
+  };
+}
+
+// ---- games -------------------------------------------------------------------------
+const poisson = (lam, k) => { let p = Math.exp(-lam); for (let i = 1; i <= k; i++) p *= lam / i; return p; };
+
+export function buildNhlGameModel(sport, data, { beforeWeek = Infinity, history = [], model = null } = {}) {
+  const C = sport.projection.game;
+  const teams = data.teams.map((t) => t.abbr);
+  const rows = [];
+  const add = (tgs, w) => {
+    for (const r of tgs) rows.push({ off: r.team, def: r.opp, gf: r.gf, sog: r.sog, home: r.home, w });
+  };
+  for (const d of history) add(d.team_games, C.priorWeight);
+  add(data.team_games.filter((r) => r.week < beforeWeek), 1);
+  const W = rows.reduce((s, r) => s + r.w, 0);
+  const mGf = rows.reduce((s, r) => s + r.w * r.gf, 0) / W;
+  const mSog = rows.reduce((s, r) => s + r.w * r.sog, 0) / W;
+  const shPct = mGf / mSog;
+  const homeRows = rows.filter((r) => r.home);
+  const hfa = C.homeIce ? homeRows.reduce((s, r) => s + r.w * r.gf, 0) / homeRows.reduce((s, r) => s + r.w, 0) - mGf : 0;
+
+  function fit(key, mean) {
+    const o = Object.fromEntries(teams.map((t) => [t, 0]));
+    const d = Object.fromEntries(teams.map((t) => [t, 0]));
+    for (let it = 0; it < 50; it++) {
+      const on = {}, dn = {}, od = {}, dd = {};
+      for (const t of teams) { on[t] = 0; dn[t] = 0; od[t] = C.ridge; dd[t] = C.ridge; }
+      for (const r of rows) {
+        if (!(r.off in o) || !(r.def in d)) continue;
+        const s = key === 'gf' ? (r.home ? hfa / 2 : -hfa / 2) : 0;
+        on[r.off] += r.w * (r[key] - mean - d[r.def] - s); od[r.off] += r.w;
+        dn[r.def] += r.w * (r[key] - mean - o[r.off] - s); dd[r.def] += r.w;
+      }
+      for (const t of teams) { o[t] = on[t] / od[t]; d[t] = dn[t] / dd[t]; }
+    }
+    return { o, d };
+  }
+  const goals = fit('gf', mGf);
+  const shots = fit('sog', mSog);
+  const O = {}, D = {};
+  for (const t of teams) {
+    O[t] = (1 - C.shotWeight) * goals.o[t] + C.shotWeight * shots.o[t] * shPct;
+    D[t] = (1 - C.shotWeight) * goals.d[t] + C.shotWeight * shots.d[t] * shPct;
+  }
+
+  // Goalie: probable starter's save % vs the team's average this season.
+  const ctx = model ? context(sport, model, history) : null;
+  const teamSv = new Map();
+  for (const r of (data.goalie_games || []).filter((x) => x.week < beforeWeek)) {
+    const s = teamSv.get(r.team) ?? { sa: 0, sv: 0 };
+    s.sa += r.sa || 0; s.sv += r.saves || 0;
+    teamSv.set(r.team, s);
+  }
+  let gameNow = null;
+  const goalieAdj = (team, oppShots) => {
+    if (!ctx || !C.goalieWeight) return { goals: 0 };
+    const g = ctx.probable(team, gameNow);
+    const s = teamSv.get(team);
+    if (!g || !s?.sa) return { goals: 0, goalie: g };
+    const teamPct = (s.sv + 500 * ctx.lgSvPct) / (s.sa + 500);
+    return { goals: C.goalieWeight * oppShots * (teamPct - g.sv), goalie: g };
+  };
+
+  function predict(g) {
+    gameNow = g;
+    let lh = mGf + O[g.home] + D[g.away] + hfa / 2;
+    let la = mGf + O[g.away] + D[g.home] - hfa / 2;
+    const gh = goalieAdj(g.home, la / shPct), ga = goalieAdj(g.away, lh / shPct);
+    la += gh.goals; // home goalie affects away goals
+    lh += ga.goals;
+    lh = Math.max(0.8, lh); la = Math.max(0.8, la);
+    let pH = 0, pT = 0, pPL = 0, over55 = 0, over65 = 0;
+    for (let i = 0; i <= 12; i++) for (let j = 0; j <= 12; j++) {
+      const p = poisson(lh, i) * poisson(la, j);
+      if (i > j) pH += p; else if (i === j) pT += p;
+      if (i - j >= 2) pPL += p;
+      if (i + j >= 6) over55 += p;
+      if (i + j >= 7) over65 += p;
+    }
+    // Squeeze toward 50/50 by C.calib (backtests: raw Poisson was overconfident).
+    const pHome = 0.5 + C.calib * (pH + pT * (0.5 + C.otHomeEdge) - 0.5);
+    return {
+      ptsHome: lh, ptsAway: la, margin: lh - la, total: lh + la, pHome,
+      pRegTie: pT, pHomeMinus15: pPL, pOver55: over55, pOver65: over65,
+      goalieHome: gh.goalie, goalieAway: ga.goalie,
+    };
+  }
+  const rating = (t) => ({ off: O[t], def: -D[t], net: O[t] - D[t] });
+  return { predict, rating, teams, mGf, hfa };
+}
