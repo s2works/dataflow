@@ -25,6 +25,9 @@ import datetime as dt
 import io
 import json
 import math
+import os
+import re
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -39,6 +42,19 @@ PBP_COLS = [
     "game_id", "season_type", "yardline_100", "rush_attempt", "pass_attempt", "two_point_attempt",
     "rusher_player_id", "receiver_player_id", "rush_touchdown", "pass_touchdown",
 ]
+
+# Player props from The Odds API (https://the-odds-api.com). Optional: only runs
+# when ODDS_API_KEY is set. Each game costs one credit per market per region, so
+# PROPS_MIN_HOURS throttles how often a game's props are re-pulled.
+ODDS_API = os.environ.get("ODDS_API_BASE", "https://api.the-odds-api.com/v4/sports/americanfootball_nfl")
+PROP_MARKETS = {
+    "player_pass_yds": "pass_yds",
+    "player_pass_tds": "pass_td",
+    "player_rush_yds": "rush_yds",
+    "player_receptions": "rec",
+    "player_reception_yds": "rec_yds",
+    "player_anytime_td": "anytime_td",
+}
 
 # How long a downloaded file is reused locally (the scheduled job starts clean).
 CACHE_HOURS = 1
@@ -247,6 +263,108 @@ def update_line_history(season: int, schedule: pd.DataFrame) -> dict:
     return history
 
 
+def norm_name(name: str) -> str:
+    name = re.sub(r"[.'’\-]", "", str(name).lower())
+    return re.sub(r"\s+(jr|sr|ii|iii|iv|v)$", "", name).strip()
+
+
+def odds_get(path: str, **params) -> tuple[object, dict]:
+    params["apiKey"] = os.environ["ODDS_API_KEY"]
+    url = f"{ODDS_API}{path}?{urllib.parse.urlencode(params)}"
+    with urllib.request.urlopen(url, timeout=60) as resp:
+        return json.loads(resp.read()), dict(resp.headers)
+
+
+def consensus(entries: list[dict]) -> dict:
+    """Median line across books; average prices of books posting that line."""
+    points = sorted(e["point"] for e in entries if e.get("point") is not None)
+    if not points:  # yes/no markets (anytime TD)
+        prices = sorted(e["over"] for e in entries if e.get("over") is not None)
+        return {"over": prices[len(prices) // 2], "best": max(prices), "books": len(prices)} if prices else {}
+    line = points[len(points) // 2]
+    at = [e for e in entries if e.get("point") == line]
+    avg = lambda k: round(sum(e[k] for e in at if e.get(k) is not None) / max(1, sum(1 for e in at if e.get(k) is not None)))  # noqa: E731
+    return {"line": line, "over": avg("over"), "under": avg("under"), "books": len(entries)}
+
+
+def parse_event_props(event: dict) -> dict:
+    """{player name: {stat: {line, over, under, books}}} from one event-odds response."""
+    raw: dict = {}
+    for book in event.get("bookmakers", []):
+        for market in book.get("markets", []):
+            stat = PROP_MARKETS.get(market["key"])
+            if not stat:
+                continue
+            per_player: dict = {}
+            for o in market.get("outcomes", []):
+                player = o.get("description")
+                if not player:
+                    continue
+                e = per_player.setdefault(player, {"point": o.get("point")})
+                side = o.get("name", "").lower()
+                e["over" if side in ("over", "yes") else "under"] = o.get("price")
+            for player, e in per_player.items():
+                raw.setdefault(player, {}).setdefault(stat, []).append(e)
+    return {p: {k: consensus(v) for k, v in stats.items()} for p, stats in raw.items()}
+
+
+def update_props(season: int, schedule: pd.DataFrame, players: list[dict]) -> dict:
+    """Pull player props for upcoming games (if ODDS_API_KEY is set)."""
+    path = OUT_DIR / f"props_{season}.json"
+    store = json.loads(path.read_text()) if path.exists() else {}
+    if not os.environ.get("ODDS_API_KEY"):
+        return store
+    min_hours = float(os.environ.get("PROPS_MIN_HOURS", "12"))
+    days_ahead = float(os.environ.get("PROPS_DAYS_AHEAD", "7"))
+    now = dt.datetime.now(dt.timezone.utc)
+    name_to_team = {v: k for k, v in TEAMS.items()}
+    by_teams = {(g["away"], g["home"]): g for g in records(schedule) if g["home_score"] is None}
+    ids = {(p["team"], norm_name(p["name"])): p["id"] for p in players}
+
+    try:
+        events, _ = odds_get("/events")  # listing events costs no credits
+    except Exception as exc:  # noqa: BLE001
+        print(f"  props: could not list events: {exc}")
+        return store
+    remaining = None
+    for ev in events:
+        g = by_teams.get((name_to_team.get(ev["away_team"]), name_to_team.get(ev["home_team"])))
+        if not g:
+            continue
+        kickoff = dt.datetime.fromisoformat(ev["commence_time"].replace("Z", "+00:00"))
+        if not (now < kickoff < now + dt.timedelta(days=days_ahead)):
+            continue
+        prev = store.get(g["game_id"])
+        if prev and (now - dt.datetime.fromisoformat(prev["fetched_at"])).total_seconds() < min_hours * 3600:
+            continue
+        cost = len(PROP_MARKETS)
+        if remaining is not None and remaining < cost:
+            print(f"  props: stopping, only {remaining} API credits left")
+            break
+        try:
+            data, headers = odds_get(f"/events/{ev['id']}/odds", regions="us", markets=",".join(PROP_MARKETS), oddsFormat="american")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  props: {g['game_id']} failed: {exc}")
+            continue
+        remaining = int(float(headers.get("x-requests-remaining", headers.get("X-Requests-Remaining", 1e9))))
+        teams = (g["away"], g["home"])
+        out = {}
+        for name, stats in parse_event_props(data).items():
+            pid = next((ids[(t, norm_name(name))] for t in teams if (t, norm_name(name)) in ids), None)
+            key = pid or f"name:{name}"
+            # Remember the first line seen so line moves on props show too.
+            old = (prev or {}).get("players", {}).get(key, {})
+            for stat, v in stats.items():
+                v["open"] = old.get(stat, {}).get("open", v.get("line"))
+            out[key] = {"name": name, **stats}
+        store[g["game_id"]] = {"fetched_at": now.isoformat(timespec="minutes"), "players": out}
+        print(f"  props: {g['game_id']} {len(out)} players")
+    if remaining is not None:
+        print(f"  props: {remaining} API credits left this month")
+    write_if_changed(path, json.dumps(store, separators=(",", ":"), sort_keys=True))
+    return store
+
+
 def write_if_changed(path: Path, text: str) -> bool:
     if path.exists() and path.read_text() == text:
         return False
@@ -335,6 +453,7 @@ def build_season(season: int, games: pd.DataFrame) -> dict | None:
         "player_games": player_games,
         "injuries": build_injuries(season),
         "td_rates": td_rates,
+        "props": update_props(season, schedule, players),
         "line_history": update_line_history(season, schedule),
     }
 

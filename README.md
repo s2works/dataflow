@@ -93,6 +93,30 @@ Log loss 0.549 vs 0.698 for "TDs scored so far" (lower is better).
 fair odds. Honest caveat: this barely beats a coin flip in backtests, so
 projections are shrunk hard toward a league-typical 1.5.
 
+### Player props vs projection
+
+**Projections → Props vs projection** lists each prop line (pass yds, pass
+TDs, rush yds, receptions, rec yds) next to the model: projection, **median**,
+model P(over), the book's P(over) with the vig removed, and the **lean** (the
+side where the model's probability beats the book's). The Touchdowns tab gets
+the anytime-TD price too, and game pages get a props card.
+
+* **Why median:** books set lines near the median, and yardage averages run
+  above medians (a few big games). P(over) comes from the backtested spread of
+  actual ÷ projected per stat (`tools/fit_prop_dist.mjs`, refit each run), not
+  a bell curve. Holdout check (fit 2025, test 2026, with the player's average
+  as a stand-in line): predicted over-rates land within a few points for
+  receptions, receiving and rushing yards; passing yards is still a small
+  sample. Real lines are sharper than that stand-in, so expect fewer and
+  smaller leans than you'd guess, and treat leans under ~5% as noise.
+* **Setup:** lines come from [The Odds API](https://the-odds-api.com). Get a
+  key and add it as the repo secret **`ODDS_API_KEY`** (Settings → Secrets and
+  variables → Actions). Each game costs 6 credits per pull (6 markets × US
+  region); ~14 games a week ≈ 85 credits per full refresh. Set the repo
+  variable **`PROPS_MIN_HOURS`** to match your plan (e.g. 168 = weekly for a
+  small free allowance, 12 for twice a day on a paid plan). The job stops
+  when credits run low.
+
 ### Injuries & line movement
 
 Each game page has an **Injury report** card (status, injury, the player's

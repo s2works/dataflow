@@ -1,6 +1,7 @@
 import nfl from './sports/nfl.js';
 import { buildModel, edgeColor, rankColor, ordinal } from './engine.js';
 import { buildProjector, fetchForecasts, weatherLabel } from './projections.js';
+import { overProb, fairOver, impliedProb, poissonAtLeast, medianOutcome } from './props.js';
 
 const SPORTS = { nfl };
 const sport = SPORTS.nfl;
@@ -25,6 +26,7 @@ const state = {
   sort: {},
   expanded: null,
   tdView: 'any',
+  projView: 'proj',
 };
 let data = null;
 let model = null;
@@ -35,6 +37,7 @@ const forecasts = new Map(); // game_id -> forecast (fetched in the browser)
 const REFRESH_MS = 5 * 60e3; // how often to check for new data
 const WEATHER_MS = 60 * 60e3; // how often to refetch forecasts
 let indexUpdated = {};
+let propDist = null; // outcome distributions for P(over a line)
 let lastCheck = null;
 let forecastsAt = 0;
 
@@ -43,6 +46,7 @@ async function boot() {
   const index = await fetchJSON(`${sport.dataPath}/index.json`);
   indexUpdated = index.updated ?? {};
   lastCheck = new Date();
+  propDist = (await fetchJSON(`${sport.dataPath}/prop_dist.json`).catch(() => null))?.stats ?? null;
   const seasonSel = $('#season');
   seasonSel.innerHTML = index.seasons.map((s) => `<option>${s}</option>`).join('');
   state.season = index.seasons[0];
@@ -379,6 +383,7 @@ function viewGame() {
         <div class="card"><h3>Line movement</h3>${lineMovement(g)}</div>
         <div class="card"><h3>Injury report</h3>${injuryCard(a, h)}</div>
       </div>
+      ${hasProps(g) ? `<div class="card"><h3>Props vs projection</h3>${propsTable('game-props', propRows(projRows().filter((r) => r.p.team === a || r.p.team === h)))}</div>` : ''}
       <div class="card"><h3>Touchdown chances</h3>${tdTable('game-td', projRows().filter((r) => r.p.team === a || r.p.team === h), 10)}</div>
       <div class="card"><h3>Projections</h3>${projTable('game-proj', projRows().filter((r) => r.p.team === a || r.p.team === h))}</div>
       <div class="card"><h3>Player edges</h3>${playersTable('game-players', players)}</div>
@@ -546,16 +551,84 @@ function projTable(id, rows) {
 
 function viewProjections() {
   let rows = projRows();
+  const props = state.projView === 'props';
   if (state.pos !== 'ALL') rows = rows.filter((x) => x.p.pos === state.pos);
   const q = state.search.trim().toLowerCase();
   if (q) rows = rows.filter((x) => x.p.name.toLowerCase().includes(q) || x.p.team.toLowerCase() === q);
   return `<div class="toolbar">
+      ${seg('projView', [['proj', 'Projections'], ['props', 'Props vs projection']])}
       ${seg('pos', [['ALL', 'All'], ...Object.keys(sport.positions).map((p) => [p, p])])}
       <input id="search" type="search" placeholder="Player or team…" value="${esc(state.search)}">
       <span class="spacer"></span>
-      <span class="muted">Average × opponent, Vegas total, game script, weather, divisional, rest, history vs opponent, recent form. Click a row for the full breakdown. ${sampleNote()}</span>
+      <span class="muted">${props ? propsNote() : ''}Average × opponent, Vegas total, game script, weather, divisional, rest, history vs opponent, recent form. Click a row for the full breakdown. ${sampleNote()}</span>
     </div>
-    <div class="card">${projTable('proj', rows)}</div>`;
+    <div class="card">${props ? propsTable('props', propRows(rows)) : projTable('proj', rows)}</div>`;
+}
+
+// ------------------------------------------------------------ props ----
+const PROP_STATS = { pass_yds: 'Pass Yds', pass_td: 'Pass TDs', rush_yds: 'Rush Yds', rec: 'Receptions', rec_yds: 'Rec Yds' };
+const hasProps = (g) => Object.keys(data.props?.[g.game_id]?.players ?? {}).length > 0;
+
+function propsNote() {
+  const games = weekGames().filter(hasProps);
+  if (!games.length) {
+    return 'No prop lines for this week yet. They come from The Odds API once ODDS_API_KEY is set on the refresh job (see README). ';
+  }
+  const t = games.map((g) => data.props[g.game_id].fetched_at).sort().pop();
+  return `Lines: consensus of US books via The Odds API, pulled ${ago(t)}. Model P(over) uses the backtested spread of outcomes around projections. `;
+}
+
+function propRows(rows) {
+  const out = [];
+  for (const { p, r } of rows) {
+    const book = data.props?.[r.game.game_id]?.players?.[p.id];
+    if (!book) continue;
+    for (const [stat, label] of Object.entries(PROP_STATS)) {
+      const b = book[stat];
+      if (!b || b.line == null) continue;
+      const proj = stat === 'pass_td' ? r.td.passLambda : r.proj[stat];
+      if (proj == null) continue;
+      const pOver = stat === 'pass_td' ? poissonAtLeast(proj, Math.floor(b.line) + 1) : overProb(propDist, stat, proj, b.line);
+      const fair = fairOver(b.over, b.under);
+      const edge = pOver != null && fair != null ? pOver - fair : null;
+      const median = stat === 'pass_td' ? proj : medianOutcome(propDist, stat, proj);
+      out.push({ p, r, stat, label, b, proj, median, pOver, fair, edge });
+    }
+  }
+  return out;
+}
+
+function propsTable(id, rows) {
+  const lean = (x) => (x.edge == null ? '–' : Math.abs(x.edge) < 0.03 ? '<span class="muted">No edge</span>' : `<strong>${x.edge > 0 ? 'Over' : 'Under'}</strong> ${pctTxt(Math.abs(x.edge))}`);
+  const cols = [
+    { id: 'name', label: 'Player', cls: 'l', sort: (x) => x.p.name, cell: (x) => `${esc(x.p.name)}${injuryBadge(x.p.id)}` },
+    { id: 'pos', label: 'Pos', cls: 'c', sort: (x) => x.p.pos, cell: (x) => `<span class="pos">${x.p.pos}</span>` },
+    { id: 'game', label: 'Game', cls: 'l', cell: (x) => `${x.p.team} <span class="vs">${x.r.isHome ? 'vs' : '@'}</span> ${x.r.opp}` },
+    { id: 'stat', label: 'Market', cls: 'l', sort: (x) => x.label, cell: (x) => x.label },
+    {
+      id: 'line', label: 'Line', title: 'Consensus line (opening line in grey if it moved)', sort: (x) => x.b.line,
+      cell: (x) => `${x.b.line}${x.b.open != null && x.b.open !== x.b.line ? ` <span class="rk">from ${x.b.open}</span>` : ''}`,
+    },
+    { id: 'odds', label: 'O / U', title: 'Over / under prices', cell: (x) => `<span class="small">${fmtMl(x.b.over)} / ${fmtMl(x.b.under)}</span>` },
+    { id: 'proj', label: 'Projection', title: 'Projected average', sort: (x) => x.proj, cell: (x) => x.proj.toFixed(x.stat === 'pass_td' || x.stat === 'rec' ? 2 : 1) },
+    {
+      id: 'median', label: 'Median', title: 'Typical outcome. Averages run above medians for yardage (a few big games), and books set lines near the median, so this is what to compare to the line.',
+      sort: (x) => x.median, cell: (x) => `<strong>${x.median.toFixed(x.stat === 'pass_td' || x.stat === 'rec' ? 2 : 1)}</strong>`,
+    },
+    {
+      id: 'diff', label: 'vs Line', title: 'Median minus the line. Green = above the line (over), red = below (under)',
+      sort: (x) => (x.median - x.b.line) / x.b.line, bg: (x) => deltaColor((x.median - x.b.line) / x.b.line),
+      cell: (x) => `${x.median - x.b.line >= 0 ? '+' : '−'}${Math.abs(x.median - x.b.line).toFixed(1)}`,
+    },
+    { id: 'pover', label: 'Model P(over)', sort: (x) => x.pOver, cell: (x) => (x.pOver == null ? '–' : pctFmt(x.pOver)) },
+    { id: 'fair', label: 'Book P(over)', title: 'Book’s probability with the vig removed', sort: (x) => x.fair, cell: (x) => (x.fair == null ? '–' : pctFmt(x.fair)) },
+    {
+      id: 'edge', label: 'Lean', title: 'Model probability minus the book’s, on the side the model prefers',
+      sort: (x) => Math.abs(x.edge ?? 0), bg: (x) => (x.edge == null || Math.abs(x.edge) < 0.03 ? 'transparent' : edgeColor(Math.abs(x.edge) * 100, 15)),
+      cell: lean,
+    },
+  ];
+  return table(id, cols, rows, { col: 'edge', asc: false });
 }
 
 function injuryCard(a, h) {
@@ -667,6 +740,12 @@ function tdWhy(r, impactKey = 'tdImpact') {
     .join('') || '<span class="muted">No strong factors.</span>';
 }
 
+function bookTd(x) {
+  const b = data.props?.[x.r.game.game_id]?.players?.[x.p.id]?.anytime_td;
+  if (!b?.over) return null;
+  return { price: b.over, edge: x.r.td.anytime - impliedProb(b.over) };
+}
+
 function tdTable(id, rows, limit = 0) {
   rows = rows
     .filter(({ r }) => r.td.lambda > 0.005)
@@ -681,6 +760,11 @@ function tdTable(id, rows, limit = 0) {
       sort: (x) => x.r.td.anytime, bg: (x) => deltaColor(x.d), cell: (x) => `<strong>${pctFmt(x.r.td.anytime)}</strong>`,
     },
     { id: 'odds', label: 'Fair odds', title: 'No-vig American odds for that probability. A book paying more than this is +EV on the model.', sort: (x) => x.r.td.anytime, cell: (x) => fairOdds(x.r.td.anytime) },
+    {
+      id: 'book', label: 'Book', title: 'Consensus anytime-TD price (includes the book’s vig). Green when the model’s probability beats the book’s implied probability.',
+      sort: (x) => bookTd(x)?.edge ?? -1, bg: (x) => { const b = bookTd(x); return b ? edgeColor(b.edge * 100, 15) : 'transparent'; },
+      cell: (x) => { const b = bookTd(x); return b ? `${fmtMl(b.price)} <span class="rk">${pctTxt(b.edge)}</span>` : '<span class="muted">–</span>'; },
+    },
     { id: 'lam', label: 'Exp TDs', title: 'Projected rushing + receiving TDs this game', sort: (x) => x.r.td.lambda, cell: (x) => x.r.td.lambda.toFixed(2) },
     { id: 'delta', label: 'vs Usual', title: 'This matchup vs the player’s usage-based TD expectation', sort: (x) => x.d, bg: (x) => deltaColor(x.d), cell: (x) => pctTxt(x.d) },
     { id: 'rz', label: 'RZ looks/G', title: 'Red-zone carries + red-zone targets per game', sort: (x) => x.r.td.rzLooks, cell: (x) => x.r.td.rzLooks.toFixed(1) },

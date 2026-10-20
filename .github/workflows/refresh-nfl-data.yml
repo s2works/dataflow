@@ -22,8 +22,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - run: pip install -r requirements.txt
       - run: python pipeline/build_nfl.py
+        env:
+          # Optional: player prop lines from The Odds API. Add the key under
+          # Settings -> Secrets and variables -> Actions. Without it, props are skipped.
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          # Hours before a game's props are re-pulled (each pull costs credits).
+          PROPS_MIN_HOURS: ${{ vars.PROPS_MIN_HOURS || '12' }}
+      - run: node tools/fit_prop_dist.mjs
       - name: Commit updated data
         run: |
           if [ -z "$(git status --porcelain -- web/data)" ]; then
