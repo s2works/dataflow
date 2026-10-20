@@ -7,7 +7,9 @@
 //
 // Factors: opponent vs position, recent form, home/away, divisional game,
 // weather (outdoor only), Vegas implied team total, game script (spread),
-// rest differential, and the player's history against this opponent.
+// rest differential, the player's history against this opponent, and
+// injuries (vacated targets/carries flow to teammates, QB changes, and a
+// small haircut for players listed Questionable).
 
 import { ordinal } from './engine.js';
 
@@ -63,17 +65,81 @@ export function buildProjector(sport, model, { history = [], weather = new Map()
 
   const fptsOf = (stats, keys) => keys.reduce((s, k) => s + (cfg.scoring[k] || 0) * (stats[k] || 0), 0);
 
+  // ---- injuries & vacated usage ------------------------------------------
+  const I = cfg.injury;
+  const report = new Map(); // player id -> injury report entry for this week
+  for (const r of data.injuries || []) if (r.week === beforeWeek) report.set(r.id, r);
+  const reportPublished = report.size > 0;
+  const statusOf = (id) => report.get(id)?.status ?? null;
+  const isOut = (p) => ['Out', 'Doubtful'].includes(statusOf(p.id));
+  const byTeam = new Map();
+  for (const p of model.players) {
+    if (!byTeam.has(p.team)) byTeam.set(p.team, []);
+    byTeam.get(p.team).push(p);
+  }
+  const sampleGames = (p) => (logs.get(p.id) || []).slice(0, p.n).map((r) => r.game_id);
+  const playedFor = (p) => new Set((logs.get(p.id) || []).filter((r) => r.team === p.team).map((r) => r.game_id));
+  const meaningful = (p) => (p.avg.tgt || 0) >= 2 || (p.avg.rush_att || 0) >= 4 || (p.pos === 'QB' && p.avg.pass_att >= 15);
+
+  const contexts = new Map();
+  function teamContext(team) {
+    if (contexts.has(team)) return contexts.get(team);
+    const roster = byTeam.get(team) || [];
+    // Missing = real role, and either ruled out this week or absent lately (IR, etc).
+    // Missing = real role and ruled Out/Doubtful on this week's report. Players
+    // absent for weeks (IR) aren't added: backtests showed their absence is
+    // already reflected in teammates' recent numbers.
+    const missing = roster.filter((p) => meaningful(p) && isOut(p));
+    const available = roster.filter((p) => p.active && !isOut(p));
+    const starter = roster.find((p) => p.pos === 'QB' && p.relevant);
+    const qbOut = starter && isOut(starter) ? starter : null;
+    const newQb = qbOut
+      ? available.filter((p) => p.pos === 'QB').sort((a, b) => b.avg.pass_att * b.n - a.avg.pass_att * a.n)[0] ?? null
+      : null;
+
+    // Redistribute each missing player's targets (to all pass catchers) and
+    // carries (to RBs), weighted toward the same position. Only the share of a
+    // teammate's sample in which the missing player actually played counts —
+    // games he already missed are baked into the teammate's average.
+    const extra = new Map();
+    for (const m of missing) {
+      if (m.pos === 'QB') continue;
+      const mPlayed = playedFor(m);
+      for (const [stat, eligible, min] of [['tgt', () => true, 1], ['rush_att', (p) => p.pos === 'RB', 2]]) {
+        const vol = m.avg[stat] || 0;
+        if (vol < min) continue;
+        const pool = available.filter((p) => p.pos !== 'QB' && eligible(p) && (p.avg[stat] || 0) > 0);
+        const w = (p) => p.avg[stat] * (p.pos === m.pos ? I.samePosWeight : 1);
+        const total = pool.reduce((s, p) => s + w(p), 0);
+        if (!total) continue;
+        for (const p of pool) {
+          const sg = sampleGames(p);
+          const overlap = sg.length ? sg.filter((id) => mPlayed.has(id)).length / sg.length : 0;
+          const add = vol * I.absorb * (w(p) / total) * overlap;
+          if (add < 0.05) continue;
+          const e = extra.get(p.id) ?? { tgt: 0, rush_att: 0, from: new Set() };
+          e[stat] += add;
+          e.from.add(m.name);
+          extra.set(p.id, e);
+        }
+      }
+    }
+    const ctx = { missing, qbOut, newQb, extra, available };
+    contexts.set(team, ctx);
+    return ctx;
+  }
+
   // ---- weather for a game ------------------------------------------------
   function gameWeather(g) {
     const st = sport.stadiums[g.stadium_id];
     if (st?.indoor || (!st && ['dome', 'closed'].includes(g.roof))) return { indoor: true };
-    if (g.home_score != null && g.temp != null) return { temp: g.temp, wind: g.wind ?? 0, source: 'recorded' };
+    if (g.home_score != null) return g.temp != null ? { temp: g.temp, wind: g.wind ?? 0, source: 'recorded' } : { unrecorded: true };
     return weather.get(g.game_id) ?? { unknown: true };
   }
 
   function weatherFactor(w) {
     const W = cfg.weather;
-    if (!w || w.indoor || w.unknown || w.error) return null;
+    if (!w || w.indoor || w.unknown || w.unrecorded || w.error) return null;
     let pass = 1, rush = 1;
     const notes = [];
     if (w.wind > W.windFrom) {
@@ -215,6 +281,36 @@ export function buildProjector(sport, model, { history = [], weather = new Map()
       }
     }
 
+    // 10. Injuries: vacated usage, QB change, own questionable tag.
+    {
+      const ctx = teamContext(pl.team);
+      const e = ctx.extra.get(pl.id);
+      if (e) {
+        const rec = base.tgt ? Math.min(I.cap, (base.tgt + e.tgt) / base.tgt) : 1;
+        const rush = base.rush_att ? Math.min(I.cap, (base.rush_att + e.rush_att) / base.rush_att) : 1;
+        const bits = [e.tgt >= 0.1 && `+${e.tgt.toFixed(1)} tgt`, e.rush_att >= 0.1 && `+${e.rush_att.toFixed(1)} car`].filter(Boolean);
+        factors.push({
+          id: 'usage', label: 'Teammates out',
+          text: `${[...e.from].join(', ')} out → ${bits.join(', ')}/G`,
+          m: (k) => (['tgt', 'rec', 'rec_yds', 'rec_td'].includes(k) ? rec : ['rush_att', 'rush_yds', 'rush_td'].includes(k) ? rush : 1),
+        });
+      }
+      if (ctx.qbOut && pl.pos !== 'QB') {
+        factors.push({
+          id: 'qb', label: 'QB change',
+          text: `${ctx.qbOut.name} out → ${ctx.newQb?.name ?? 'backup'} at QB`,
+          m: (k) => (['pass_yds', 'pass_td', 'rec_yds', 'rec_td', 'rec'].includes(k) ? I.backupQb : 1),
+        });
+      }
+      if (ctx.newQb?.id === pl.id) {
+        factors.push({ id: 'qb', label: 'QB change', text: `Projected starter (${ctx.qbOut.name} out)`, m: () => 1 });
+      }
+      const st = report.get(pl.id);
+      if (st?.status === 'Questionable') {
+        factors.push({ id: 'status', label: 'Questionable', text: `Questionable${st.injury ? ` (${st.injury})` : ''}`, m: (k) => (cat(k) === 'none' ? 1 : I.questionable) });
+      }
+    }
+
     // ---- combine ----------------------------------------------------------
     for (let i = factors.length - 1; i >= 0; i--) if (disabled.has(factors[i].id)) factors.splice(i, 1);
     const [lo, hi] = cfg.totalClamp;
@@ -245,7 +341,7 @@ export function buildProjector(sport, model, { history = [], weather = new Map()
     };
   }
 
-  return { project, league, gameWeather };
+  return { project, league, gameWeather, teamContext, isOut, statusOf, report, reportPublished };
 }
 
 // Fetch kickoff-window forecasts for outdoor games from Open-Meteo (free, no key,
@@ -294,6 +390,7 @@ export async function fetchForecasts(sport, games, into) {
 export function weatherLabel(w) {
   if (!w) return '';
   if (w.indoor) return 'Indoors';
+  if (w.unrecorded) return 'Weather not recorded';
   if (w.unknown) return 'Forecast not available yet';
   if (w.error) return 'Forecast unavailable';
   const parts = [`${Math.round(w.temp)}°F`, `wind ${Math.round(w.wind)} mph`];

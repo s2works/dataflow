@@ -135,6 +135,10 @@ export default {
       rain: { pass: -0.05, rush: 0.02 }, snow: { pass: -0.08, rush: 0 },
       passFloor: 0.8, rushCap: 1.06,
     },
+    // Injuries: share of a missing player's targets/carries that teammates in
+    // the projection absorb (the rest goes to depth players), extra weight for
+    // the same position, backup-QB hit on pass catchers, Questionable haircut.
+    injury: { absorb: 0.7, samePosWeight: 1.5, backupQb: 0.9, questionable: 0.95, cap: 1.6 },
     totalClamp: [0.6, 1.6],
   },
 

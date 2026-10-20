@@ -31,10 +31,17 @@ let projector = null;
 let history = [];
 const cache = new Map();
 const forecasts = new Map(); // game_id -> forecast (fetched in the browser)
+const REFRESH_MS = 5 * 60e3; // how often to check for new data
+const WEATHER_MS = 60 * 60e3; // how often to refetch forecasts
+let indexUpdated = {};
+let lastCheck = null;
+let forecastsAt = 0;
 
 // ---------------------------------------------------------------- boot ----
 async function boot() {
   const index = await fetchJSON(`${sport.dataPath}/index.json`);
+  indexUpdated = index.updated ?? {};
+  lastCheck = new Date();
   const seasonSel = $('#season');
   seasonSel.innerHTML = index.seasons.map((s) => `<option>${s}</option>`).join('');
   state.season = index.seasons[0];
@@ -49,15 +56,52 @@ async function boot() {
   window.addEventListener('hashchange', readHash);
   readHash(false);
   await loadSeason(state.season);
+  setInterval(checkForUpdates, REFRESH_MS);
+  setInterval(renderMeta, 30e3);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && Date.now() - lastCheck > 60e3) checkForUpdates();
+  });
+}
+
+// Auto-refresh: the scheduled pipeline bumps index.json when data changes.
+async function checkForUpdates() {
+  try {
+    const index = await fetchJSON(`${sport.dataPath}/index.json`);
+    lastCheck = new Date();
+    const changed = [state.season, state.season - 1].filter((s) => index.updated?.[s] && index.updated[s] !== indexUpdated[s]);
+    indexUpdated = index.updated ?? {};
+    for (const s of changed) cache.delete(s);
+    const staleWeather = Date.now() - forecastsAt > WEATHER_MS;
+    if (staleWeather) forecasts.clear();
+    if (changed.length) await loadSeason(state.season, { keepWeek: true });
+    else if (staleWeather) recompute();
+    else renderMeta();
+  } catch (err) {
+    console.warn('refresh check failed', err);
+  }
+}
+
+function ago(iso) {
+  if (!iso) return '–';
+  const mins = Math.round((Date.now() - new Date(iso)) / 60e3);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  if (mins < 48 * 60) return `${Math.round(mins / 60)} h ago`;
+  return `${Math.round(mins / 1440)} days ago`;
+}
+
+function renderMeta() {
+  if (!data) return;
+  $('#meta').textContent = `Data: nflverse · through week ${data.last_week_played} · updated ${ago(data.generated_at)} · auto-refresh on (checked ${ago(lastCheck)})`;
 }
 
 async function fetchJSON(url) {
-  const res = await fetch(url);
+  const res = await fetch(url, { cache: 'no-cache' });
   if (!res.ok) throw new Error(`${url}: ${res.status}`);
   return res.json();
 }
 
-async function loadSeason(season) {
+async function loadSeason(season, { keepWeek = false } = {}) {
   state.season = season;
   if (!cache.has(season)) cache.set(season, await fetchJSON(`${sport.dataPath}/${season}.json`));
   data = cache.get(season);
@@ -71,13 +115,13 @@ async function loadSeason(season) {
   // Upcoming week = first week with a game today or later (scores can lag a day).
   const today = new Date().toISOString().slice(0, 10);
   const upcoming = data.schedule.find((g) => g.gameday >= today) ?? data.schedule.find((g) => g.home_score == null);
-  state.week = upcoming ? upcoming.week : weeks[weeks.length - 1][0];
+  if (!keepWeek) state.week = upcoming ? upcoming.week : weeks[weeks.length - 1][0];
   const linked = data.schedule.find((g) => g.game_id === state.game);
   if (linked) state.week = linked.week;
   $('#week').innerHTML = weeks
     .map(([w, type]) => `<option value="${w}" ${w === state.week ? 'selected' : ''}>${type === 'REG' ? `Week ${w}` : POST_LABELS[type] || type}</option>`)
     .join('');
-  $('#meta').textContent = `Data: nflverse · through week ${data.last_week_played} · built ${data.generated_at.slice(0, 10)}`;
+  renderMeta();
   recompute();
 }
 
@@ -88,6 +132,7 @@ function recompute() {
   // Pull live forecasts for this week's outdoor games, then re-project.
   const pending = weekGames().filter((g) => !forecasts.has(g.game_id));
   if (pending.length) {
+    forecastsAt = Date.now();
     fetchForecasts(sport, pending, forecasts).then(() => {
       projector = buildProjector(sport, model, { history, weather: forecasts });
       render();
@@ -138,13 +183,32 @@ function gameLine(g) {
   const parts = [];
   if (g.home_score != null) parts.push(`Final ${g.away} ${g.away_score} – ${g.home} ${g.home_score}`);
   else parts.push(`${g.weekday ?? ''} ${g.gameday ?? ''} ${g.gametime ?? ''}`.trim());
+  const open = openingLine(g);
   if (g.spread_line != null) {
-    // nflverse spread_line is from the home team's perspective (positive = home favored).
-    const fav = g.spread_line > 0 ? g.home : g.away;
-    parts.push(g.spread_line === 0 ? 'PK' : `${fav} -${Math.abs(g.spread_line)}`);
+    const moved = open && open.spread !== g.spread_line ? ` (open ${spreadText(g, open.spread)})` : '';
+    parts.push(spreadText(g, g.spread_line) + moved);
   }
-  if (g.total_line != null) parts.push(`O/U ${g.total_line}`);
+  if (g.total_line != null) {
+    const moved = open && open.total !== g.total_line ? ` (open ${open.total})` : '';
+    parts.push(`O/U ${g.total_line}${moved}`);
+  }
   return parts.join(' · ');
+}
+
+// nflverse spread_line is from the home team's perspective (positive = home favored).
+function spreadText(g, spread) {
+  if (spread == null) return '–';
+  if (spread === 0) return 'PK';
+  return `${spread > 0 ? g.home : g.away} -${Math.abs(spread)}`;
+}
+
+// Line snapshots recorded by the refresh job: [time, spread, total, awayML, homeML].
+function lineHistory(g) {
+  return (data.line_history?.[g.game_id] ?? []).map(([t, spread, total, aml, hml]) => ({ t, spread, total, aml, hml }));
+}
+
+function openingLine(g) {
+  return lineHistory(g)[0] ?? null;
 }
 
 // All offense-vs-defense comparisons for one direction of a game.
@@ -310,6 +374,10 @@ function viewGame() {
         <p class="muted" style="margin:0 0 8px">Values per game with league rank. Offense rank 1 = most productive; defense rank 1 = stingiest. Edge = defense rank − offense rank (positive = offense advantage). ${sampleNote()}</p>
         ${matchupTable('team', sideEdges(a, h), sideEdges(h, a), a, h)}
       </div>
+      <div class="grid two">
+        <div class="card"><h3>Line movement</h3>${lineMovement(g)}</div>
+        <div class="card"><h3>Injury report</h3>${injuryCard(a, h)}</div>
+      </div>
       <div class="card"><h3>Projections</h3>${projTable('game-proj', projRows().filter((r) => r.p.team === a || r.p.team === h))}</div>
       <div class="card"><h3>Player edges</h3>${playersTable('game-players', players)}</div>
       <div class="grid two">${posBlocks}</div>
@@ -328,7 +396,7 @@ function playersTable(id, rows) {
   const cols = [
     {
       id: 'name', label: 'Player', cls: 'l', sort: (r) => r.name,
-      cell: (r) => `<span class="player">${r.img ? `<img loading="lazy" src="${esc(r.img)}" alt="" onerror="this.remove()">` : ''}<span>${esc(r.name)}${r.relevant ? '' : ' <span class="muted" title="Low usage or not active recently">·</span>'}</span></span>`,
+      cell: (r) => `<span class="player">${r.img ? `<img loading="lazy" src="${esc(r.img)}" alt="" onerror="this.remove()">` : ''}<span>${esc(r.name)}${injuryBadge(r.id)}${r.relevant ? '' : ' <span class="muted" title="Low usage or not active recently">·</span>'}</span></span>`,
     },
     { id: 'pos', label: 'Pos', cls: 'c', sort: (r) => r.pos, cell: (r) => `<span class="pos">${r.pos}</span>` },
     { id: 'team', label: 'Team', cls: 'l', sort: (r) => r.team, cell: (r) => `${r.team} <span class="vs">${r.home ? 'vs' : '@'}</span> ${r.m.opp}` },
@@ -384,8 +452,21 @@ function projRows() {
   const games = new Map();
   for (const g of weekGames()) { games.set(g.away, g); games.set(g.home, g); }
   return model.players
-    .filter((p) => games.has(p.team) && p.relevant)
-    .map((p) => ({ p, r: projector.project(p, games.get(p.team)) }));
+    .filter((p) => games.has(p.team) && p.active && !projector.isOut(p))
+    .map((p) => ({ p, r: projector.project(p, games.get(p.team)) }))
+    .filter(({ p, r }) => {
+      const ctx = projector.teamContext(p.team);
+      if (p.pos === 'QB') return ctx.newQb ? ctx.newQb.id === p.id : p.relevant;
+      // Depth players qualify when teammates' absences push them into a real role.
+      return p.relevant || sport.positions[p.pos].relevant(r.proj);
+    });
+}
+
+const STATUS_SHORT = { Out: 'OUT', Doubtful: 'D', Questionable: 'Q' };
+function injuryBadge(id) {
+  const st = projector.report.get(id);
+  if (!st) return '';
+  return ` <span class="inj inj-${st.status.toLowerCase()}" title="${esc(`${st.status}${st.injury ? ` – ${st.injury}` : ''}${st.practice ? ` · ${st.practice}` : ''}`)}">${STATUS_SHORT[st.status]}</span>`;
 }
 
 const deltaColor = (d) => edgeColor(d * 100, 25);
@@ -426,7 +507,7 @@ function projTable(id, rows) {
       .map((f) => `<span class="chip" style="background:${edgeColor(f.impact * 100, 12)}">${esc(f.text)} <strong>${pctTxt(f.impact)}</strong></span>`)
       .join('') || '<span class="muted">No strong factors — projection ≈ average.</span>';
     let html = `<tr class="clickable" data-expand="${key}">
-      <td class="l"><span class="player">${p.img ? `<img loading="lazy" src="${esc(p.img)}" alt="" onerror="this.remove()">` : ''}<span>${esc(p.name)}</span></span></td>
+      <td class="l"><span class="player">${p.img ? `<img loading="lazy" src="${esc(p.img)}" alt="" onerror="this.remove()">` : ''}<span>${esc(p.name)}${injuryBadge(p.id)}</span></span></td>
       <td class="c"><span class="pos">${p.pos}</span></td>
       <td class="l">${p.team} <span class="vs">${r.isHome ? 'vs' : '@'}</span> ${r.opp}</td>
       <td style="background:${deltaColor(r.delta)}"><strong>${r.projFpts.toFixed(1)}</strong></td>
@@ -474,6 +555,97 @@ function viewProjections() {
     </div>
     <div class="card">${projTable('proj', rows)}</div>`;
 }
+
+function injuryCard(a, h) {
+  if (!projector.reportPublished) {
+    return `<p class="muted">The official injury report for this week isn't out yet (teams file Wed–Fri). Projections update automatically once it is.</p>`;
+  }
+  const rows = [];
+  for (const team of [a, h]) {
+    const ctx = projector.teamContext(team);
+    const roster = new Map(model.players.filter((p) => p.team === team).map((p) => [p.id, p]));
+    for (const e of projector.report.values()) {
+      if (e.team !== team) continue;
+      const p = roster.get(e.id);
+      const usage = p ? [p.avg.tgt >= 0.5 && `${p.avg.tgt.toFixed(1)} tgt`, p.avg.rush_att >= 0.5 && `${p.avg.rush_att.toFixed(1)} car`, p.pos === 'QB' && p.avg.pass_att >= 1 && `${p.avg.pass_att.toFixed(0)} att`].filter(Boolean).join(', ') : '';
+      const gains = p && ctx.missing.includes(p)
+        ? [...ctx.extra.entries()]
+            .filter(([, x]) => x.from.has(p.name))
+            .sort(([, x], [, y]) => y.tgt + y.rush_att - (x.tgt + x.rush_att))
+            .map(([id]) => model.players.find((q) => q.id === id)?.name)
+            .filter(Boolean)
+        : [];
+      rows.push({ team, e, usage, gains, order: { Out: 0, Doubtful: 1, Questionable: 2 }[e.status] });
+    }
+  }
+  rows.sort((x, y) => x.team.localeCompare(y.team) || x.order - y.order);
+  if (!rows.length) return '<p class="muted">No QB/RB/WR/TE on the report.</p>';
+  return `<div class="tbl-wrap"><table>
+    <tr><th class="l">Player</th><th class="l">Status</th><th>Usage/G</th><th class="l">Volume goes to</th></tr>
+    ${rows.map(({ team, e, usage, gains }) => `<tr>
+      <td class="l">${team} <span class="pos">${e.pos}</span> ${esc(e.name)}</td>
+      <td class="l"><span class="inj inj-${e.status.toLowerCase()}">${e.status}</span> <span class="muted">${esc(e.injury ?? '')}</span></td>
+      <td>${usage || '<span class="muted">–</span>'}</td>
+      <td class="l muted wrap">${gains.length ? esc(gains.slice(0, 3).join(', ')) : ''}</td>
+    </tr>`).join('')}
+  </table></div>`;
+}
+
+// Step chart of one line over time. Single series, so no legend: the heading names it.
+function lineChart(points, label, fmtY) {
+  const W = 320, H = 90, P = { l: 34, r: 10, t: 10, b: 18 };
+  const ts = points.map((p) => +new Date(p.t));
+  const ys = points.map((p) => p.y);
+  const t0 = Math.min(...ts), t1 = Math.max(Date.now(), ...ts);
+  let y0 = Math.min(...ys), y1 = Math.max(...ys);
+  if (y1 - y0 < 2) { y0 -= 1; y1 += 1; }
+  const x = (t) => P.l + ((t - t0) / (t1 - t0 || 1)) * (W - P.l - P.r);
+  const y = (v) => P.t + (1 - (v - y0) / (y1 - y0)) * (H - P.t - P.b);
+  let d = '';
+  points.forEach((p, i) => {
+    const px = x(ts[i]), py = y(p.y);
+    d += i === 0 ? `M${px},${py}` : `H${px}V${py}`;
+  });
+  d += `H${x(t1)}`;
+  const fmtT = (t) => new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric' });
+  const dots = points.map((p, i) => `<g class="pt"><circle cx="${x(ts[i])}" cy="${y(p.y)}" r="9" fill="transparent"/><circle cx="${x(ts[i])}" cy="${y(p.y)}" r="4" fill="var(--accent)" stroke="var(--panel)" stroke-width="2"/><title>${esc(`${label}: ${fmtY(p.y)} · ${fmtT(ts[i])}`)}</title></g>`).join('');
+  return `<svg class="linechart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(label)} over time">
+    <line x1="${P.l}" x2="${W - P.r}" y1="${y(y0)}" y2="${y(y0)}" stroke="var(--line)"/>
+    <text x="${P.l - 6}" y="${y(y1) + 4}" text-anchor="end">${esc(String(y1))}</text>
+    <text x="${P.l - 6}" y="${y(y0) + 4}" text-anchor="end">${esc(String(y0))}</text>
+    <text x="${P.l}" y="${H - 3}">${esc(fmtT(t0))}</text>
+    <text x="${W - P.r}" y="${H - 3}" text-anchor="end">now</text>
+    <path d="${d}" fill="none" stroke="var(--accent)" stroke-width="2"/>
+    ${dots}
+  </svg>`;
+}
+
+function lineMovement(g) {
+  const hist = lineHistory(g);
+  if (g.home_score != null && !hist.length) return '<p class="muted">Game played before line tracking started.</p>';
+  if (!hist.length) return '<p class="muted">No line posted yet.</p>';
+  const open = hist[0], cur = hist[hist.length - 1];
+  const since = new Date(open.t).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const ds = cur.spread - open.spread; // + = moved toward home
+  const dt = cur.total - open.total;
+  const spreadMove = ds === 0 ? 'no move' : `${Math.abs(ds)} pts toward ${ds > 0 ? g.home : g.away}`;
+  const totalMove = dt === 0 ? 'no move' : `${dt > 0 ? '+' : '−'}${Math.abs(dt)}`;
+  const summary = `<table>
+    <tr><th class="l"></th><th>Open</th><th>Now</th><th class="l">Move</th></tr>
+    <tr><td class="l">Spread</td><td>${spreadText(g, open.spread)}</td><td><strong>${spreadText(g, cur.spread)}</strong></td><td class="l">${spreadMove}</td></tr>
+    <tr><td class="l">Total</td><td>${open.total ?? '–'}</td><td><strong>${cur.total ?? '–'}</strong></td><td class="l">${totalMove}</td></tr>
+    <tr><td class="l">Moneyline</td><td>${g.away} ${fmtMl(open.aml)} / ${g.home} ${fmtMl(open.hml)}</td><td>${g.away} ${fmtMl(cur.aml)} / ${g.home} ${fmtMl(cur.hml)}</td><td></td></tr>
+  </table>`;
+  const charts = hist.length > 1
+    ? `<div class="grid two charts">
+        <div><div class="muted small">${g.home} spread (+ = ${g.home} favored)</div>${lineChart(hist.map((h) => ({ t: h.t, y: h.spread })), `${g.home} spread`, (v) => spreadText(g, v))}</div>
+        <div><div class="muted small">Total</div>${lineChart(hist.map((h) => ({ t: h.t, y: h.total })), 'Total', (v) => String(v))}</div>
+      </div>`
+    : '';
+  return `${summary}${charts}<p class="muted small">Tracked since ${since} (${hist.length} line change${hist.length === 1 ? '' : 's'} recorded). Opening = first line the refresh job saw.</p>`;
+}
+
+const fmtMl = (v) => (v == null ? '–' : v > 0 ? `+${v}` : `${v}`);
 
 function viewDvp() {
   const metrics = [

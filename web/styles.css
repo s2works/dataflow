@@ -89,6 +89,7 @@ th.sortable:hover { color: var(--ink); }
 th.sorted::after { content: " ▾"; }
 th.sorted.asc::after { content: " ▴"; }
 td.l, th.l { text-align: left; }
+td.wrap { white-space: normal; min-width: 160px; }
 td.c, th.c { text-align: center; }
 tr:last-child td { border-bottom: 0; }
 .rk { color: var(--muted); font-size: 11.5px; margin-left: 4px; }
@@ -103,6 +104,15 @@ tr.detail > td { background: var(--bg); padding: 12px; white-space: normal; }
 tr.detail table td, tr.detail table th { background: transparent; }
 td .chips { min-width: 240px; }
 .matchup-head .muted + .muted::before { content: "· "; }
+.inj { font-size: 10.5px; font-weight: 700; padding: 1px 5px; border-radius: 3px; vertical-align: 1px; }
+.inj-out, .inj-doubtful { background: rgba(var(--bad-rgb), .18); color: rgb(var(--bad-rgb)); }
+.inj-questionable { background: rgba(234, 179, 8, .2); color: #a16207; }
+@media (prefers-color-scheme: dark) { .inj-questionable { color: #facc15; } }
+.small { font-size: 12px; }
+.linechart { width: 100%; height: auto; display: block; overflow: visible; }
+.linechart text { font-size: 10px; fill: var(--muted); }
+.linechart .pt:hover circle:last-of-type { r: 5; }
+.grid.two.charts { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-top: 10px; }
 .back { cursor: pointer; color: var(--accent); background: none; border: 0; font: inherit; padding: 0; margin-bottom: 10px; }
 .matchup-head { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: baseline; margin-bottom: 12px; }
 .matchup-head h2 { margin: 0; font-size: 20px; }

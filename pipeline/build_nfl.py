@@ -6,6 +6,13 @@ releases and writes compact JSON files that the static dashboard in web/ reads.
 Rankings are NOT computed here: the dashboard computes them in the browser so
 it can re-rank on the fly for different windows (full season, last N games).
 
+Also records a snapshot of every upcoming game's betting line on each run
+(web/data/nfl/lines_<season>.json), which is how line movement is tracked:
+nflverse only publishes the current line.
+
+Files are only rewritten when their content changed, so the scheduled refresh
+job commits nothing when there is nothing new.
+
 Usage:
     python pipeline/build_nfl.py                 # current + previous season
     python pipeline/build_nfl.py --seasons 2025 2026
@@ -26,6 +33,10 @@ import pandas as pd
 RELEASES = "https://github.com/nflverse/nflverse-data/releases/download"
 PLAYER_STATS_URL = RELEASES + "/stats_player/stats_player_week_{season}.csv"
 SCHEDULE_URL = RELEASES + "/schedules/games.csv"
+INJURIES_URL = RELEASES + "/injuries/injuries_{season}.csv"
+
+# How long a downloaded file is reused locally (the scheduled job starts clean).
+CACHE_HOURS = 1
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = ROOT / "web" / "data" / "nfl"
@@ -196,10 +207,50 @@ def build_player_games(stats: pd.DataFrame) -> tuple[list[dict], list[dict]]:
     return players, rows
 
 
+def build_injuries(season: int) -> list[dict]:
+    """Weekly official injury report entries for skill positions."""
+    try:
+        raw = fetch(INJURIES_URL.format(season=season), f"injuries_{season}.csv", CACHE_HOURS)
+    except Exception as exc:  # noqa: BLE001 - not published yet
+        print(f"  no injury report for {season}: {exc}")
+        return []
+    inj = pd.read_csv(io.BytesIO(raw), low_memory=False)
+    inj = inj[inj["position"].isin(POSITIONS) & inj["report_status"].isin(["Out", "Doubtful", "Questionable"])]
+    inj = inj.rename(columns={
+        "gsis_id": "id", "full_name": "name", "position": "pos", "report_status": "status",
+        "report_primary_injury": "injury", "practice_status": "practice",
+    })
+    inj["pos"] = inj["pos"].map(POSITIONS)
+    return records(inj[["week", "team", "id", "name", "pos", "status", "injury", "practice"]].sort_values(["week", "team", "name"]))
+
+
+def update_line_history(season: int, schedule: pd.DataFrame) -> dict:
+    """Append the current line for every unplayed game when it changed."""
+    path = OUT_DIR / f"lines_{season}.json"
+    history = json.loads(path.read_text()) if path.exists() else {}
+    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes")
+    for g in records(schedule):
+        if g["home_score"] is not None or g["spread_line"] is None:
+            continue
+        snap = [g["spread_line"], g["total_line"], g["away_moneyline"], g["home_moneyline"]]
+        rows = history.setdefault(g["game_id"], [])
+        if not rows or rows[-1][1:] != snap:
+            rows.append([now, *snap])
+    write_if_changed(path, json.dumps(history, separators=(",", ":"), sort_keys=True))
+    return history
+
+
+def write_if_changed(path: Path, text: str) -> bool:
+    if path.exists() and path.read_text() == text:
+        return False
+    path.write_text(text)
+    return True
+
+
 def build_season(season: int, games: pd.DataFrame) -> dict | None:
     print(f"Season {season}")
     try:
-        raw = fetch(PLAYER_STATS_URL.format(season=season), f"stats_player_week_{season}.csv", 6)
+        raw = fetch(PLAYER_STATS_URL.format(season=season), f"stats_player_week_{season}.csv", CACHE_HOURS)
     except Exception as exc:  # noqa: BLE001 - season may simply not exist yet
         print(f"  no player stats for {season}: {exc}")
         return None
@@ -226,6 +277,8 @@ def build_season(season: int, games: pd.DataFrame) -> dict | None:
         "position_games": records(pos_games),
         "players": players,
         "player_games": player_games,
+        "injuries": build_injuries(season),
+        "line_history": update_line_history(season, schedule),
     }
 
 
@@ -237,25 +290,35 @@ def main() -> None:
     parser.add_argument("--seasons", type=int, nargs="+", default=[current - 1, current])
     args = parser.parse_args()
 
-    games = pd.read_csv(io.BytesIO(fetch(SCHEDULE_URL, "games.csv", 6)), low_memory=False)
+    games = pd.read_csv(io.BytesIO(fetch(SCHEDULE_URL, "games.csv", CACHE_HOURS)), low_memory=False)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     index_path = OUT_DIR / "index.json"
     index = json.loads(index_path.read_text()) if index_path.exists() else {"seasons": []}
     seasons = set(index["seasons"])
+    updated = index.get("updated", {})
 
     for season in args.seasons:
         data = build_season(season, games)
         if data is None:
             continue
         out = OUT_DIR / f"{season}.json"
-        out.write_text(json.dumps(data, separators=(",", ":")))
         seasons.add(season)
+        # Compare without the timestamp so unchanged data isn't rewritten.
+        if out.exists():
+            old = json.loads(out.read_text())
+            if {**old, "generated_at": None} == {**json.loads(json.dumps(data)), "generated_at": None}:
+                print(f"  {out.relative_to(ROOT)} unchanged")
+                continue
+        out.write_text(json.dumps(data, separators=(",", ":")))
+        updated[str(season)] = data["generated_at"]
         print(f"  wrote {out.relative_to(ROOT)} ({out.stat().st_size / 1024:.0f} KB, "
-              f"{len(data['team_games'])} team-games, {len(data['player_games'])} player-games)")
+              f"{len(data['team_games'])} team-games, {len(data['player_games'])} player-games, "
+              f"{len(data['injuries'])} injury entries)")
 
-    index = {"seasons": sorted(seasons, reverse=True)}
-    index_path.write_text(json.dumps(index, indent=2) + "\n")
+    # The dashboard polls this small file to know when to reload.
+    index = {"seasons": sorted(seasons, reverse=True), "updated": {k: updated[k] for k in sorted(updated)}}
+    write_if_changed(index_path, json.dumps(index, indent=2) + "\n")
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 //
 //   node tools/backtest.mjs            # all built seasons
 //
-// Prints mean absolute error (PPR points) for: the plain average, the full
+// Prints mean absolute / root-mean-square error (PPR points) for: the plain average, the full
 // model, and the full model minus each factor (lower = better; if removing a
 // factor lowers the error, that factor is hurting). Then checks that the
 // red/green buckets line up with how players actually did.
@@ -18,7 +18,7 @@ const { buildModel } = await load('js/engine.js');
 const { buildProjector } = await load('js/projections.js');
 
 const cfg = sport.projection;
-const FACTORS = ['opp', 'form', 'home', 'div', 'weather', 'vegas', 'script', 'rest', 'hist'];
+const FACTORS = ['opp', 'form', 'home', 'div', 'weather', 'vegas', 'script', 'rest', 'hist', 'usage', 'qb', 'status'];
 const readSeason = (s) => {
   const f = path.join(WEB, 'data', 'nfl', `${s}.json`);
   return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f)) : null;
@@ -47,27 +47,32 @@ for (const season of seasons) {
 }
 
 function evaluate(disabled) {
-  let abs = 0, n = 0;
+  let abs = 0, sq = 0, n = 0;
   const results = [];
   for (const wk of weeks) {
     const pr = buildProjector(sport, wk.model, { history: wk.history, disabled: new Set(disabled) });
     for (const it of wk.items) {
       const r = pr.project(it.p, it.g);
       abs += Math.abs(r.projFpts - it.actual);
+      sq += (r.projFpts - it.actual) ** 2;
       n++;
       results.push({ r, actual: it.actual });
     }
   }
-  return { mae: abs / n, n, results };
+  return { mae: abs / n, rmse: Math.sqrt(sq / n), n, results };
 }
 
 const base = evaluate(FACTORS);
 const full = evaluate([]);
 console.log(`${full.n} player-games, seasons ${seasons.join(', ')} (weeks 4+)\n`);
-console.log('MAE (PPR pts, lower is better)');
-console.log(`  plain average        ${base.mae.toFixed(3)}`);
-console.log(`  full model           ${full.mae.toFixed(3)}`);
-for (const f of FACTORS) console.log(`  without ${f.padEnd(12)} ${evaluate([f]).mae.toFixed(3)}`);
+// MAE rewards the median and RMSE the mean; fantasy scoring is right-skewed,
+// so upward adjustments (e.g. teammates out) can be right on average and still
+// raise MAE. Look at both.
+const row = (label, e) => console.log(`  ${label.padEnd(20)} ${e.mae.toFixed(3)}   ${e.rmse.toFixed(3)}`);
+console.log('Error in PPR pts (lower is better)   MAE     RMSE');
+row('plain average', base);
+row('full model', full);
+for (const f of FACTORS) row(`without ${f}`, evaluate([f]));
 
 console.log('\nColor calibration: how often the player beat his own average');
 const buckets = [['≥ +10%', 0.1, 9], ['+5 to +10%', 0.05, 0.1], ['±5%', -0.05, 0.05], ['−5 to −10%', -0.1, -0.05], ['≤ −10%', -9, -0.1]];

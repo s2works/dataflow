@@ -49,13 +49,40 @@ percentages shown in **Why**.
 | History vs opponent | The player's past games against this team (this and last season), regressed. |
 | Recent form | Last 3 games vs the sample average. |
 | Home / road | Shown, but only applied when there's no Vegas line. Backtests showed the line already prices it in. |
+| Teammates out | Players ruled **Out/Doubtful** on the official injury report hand their targets (to all pass catchers) and carries (to RBs) to teammates, weighted toward the same position; 70% is absorbed by the players shown, the rest by depth guys. Only the part of a teammate's sample where the injured player actually played counts. Depth players who become starters show up automatically. |
+| QB change | If the starting QB is out, the backup is projected as the starter and his pass catchers take a 10% passing hit. |
+| Questionable | −5% for the player himself. |
 
-**Backtest** (`node tools/backtest.mjs`, 2025 wks 4–18 + 2026): mean absolute
-error 5.63 PPR pts vs 5.74 for the plain average, and the colors line up with
-results — players flagged **≥ +10%** beat their average 56.5% of the time,
-**≤ −10%** only 34.9%. Fantasy points are noisy; treat projections as a
+**Backtest** (`node tools/backtest.mjs`, 2025 wks 4–18 + 2026): error of
+5.64 / 7.34 PPR pts (MAE / RMSE) vs 5.74 / 7.47 for the plain average, and the
+colors line up with results: players flagged **≥ +10%** beat their average
+55% of the time, **≤ −10%** only 33%. Teammates of players ruled out really do
+score more (10.9 actual vs 10.1 average; projected 10.8), which RMSE rewards;
+MAE penalizes any upward shift on right-skewed fantasy scores, so check both. Fantasy points are noisy; treat projections as a
 tiebreaker and context, not a lock. All weights live in
 `web/js/sports/nfl.js` → `projection`; re-run the backtest after changing them.
+
+### Injuries & line movement
+
+Each game page has an **Injury report** card (status, injury, the player's
+usage, and who absorbs it) and a **Line movement** card: open vs current
+spread, total and moneylines, plus step charts of each over time. Badges
+(OUT / D / Q) appear next to player names everywhere.
+
+nflverse only publishes the *current* line, so the refresh job records a
+snapshot of every upcoming game's line on each run (`web/data/nfl/lines_<season>.json`).
+"Open" is the first line it saw; history starts when the job first runs.
+
+### Auto-refresh
+
+* `.github/workflows/refresh-nfl-data.yml` runs every 2 hours during the
+  season (Sept–Feb): new stats, scores, injury reports and lines. It only
+  commits when something changed.
+* The dashboard checks `index.json` every 5 minutes (and when you come back to
+  the tab) and reloads changed data in place, keeping your week/tab. Weather
+  forecasts refresh hourly. The footer shows when data last changed.
+* For this to reach the browser, host `web/` from the repo (GitHub Pages,
+  Vercel, Netlify, …) so each data commit is redeployed.
 
 ### Controls
 
@@ -82,7 +109,8 @@ season and commits it.
 
 All data comes from [nflverse](https://github.com/nflverse/nflverse-data)
 (public, free): weekly player stats and the schedule, which includes betting
-lines (spread, total, moneylines), rest days and recorded game weather.
+lines (spread, total, moneylines), rest days, recorded game weather and the
+official weekly injury reports.
 Upcoming-game forecasts are fetched in the browser from
 [Open-Meteo](https://open-meteo.com) (free, no API key). Team totals are summed from player stats;
 points come from final scores. Fantasy points are PPR.
