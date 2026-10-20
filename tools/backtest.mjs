@@ -40,7 +40,7 @@ for (const season of seasons) {
     for (const p of model.players.filter((x) => x.relevant)) {
       const g = games.find((x) => x.home === p.team || x.away === p.team);
       const a = actual.get(p.id);
-      if (g && a) items.push({ p, g, actual: fpts(a, cfg.stats[p.pos]) });
+      if (g && a) items.push({ p, g, row: a, actual: fpts(a, cfg.stats[p.pos]) });
     }
     weeks.push({ model, history, items });
   }
@@ -80,4 +80,65 @@ for (const [label, lo, hi] of buckets) {
   const xs = full.results.filter(({ r }) => r.delta >= lo && r.delta < hi);
   const beat = xs.filter(({ r, actual }) => actual > r.baseFpts).length;
   console.log(`  ${label.padEnd(12)} n=${String(xs.length).padEnd(5)} beat avg ${((100 * beat) / xs.length).toFixed(1)}%`);
+}
+
+// ---- Anytime touchdown probabilities ----------------------------------------
+// Log loss / Brier (lower is better) of P(rush or rec TD) against what happened.
+// "TDs scored only" is the naive model: the player's actual TD rate, Poisson.
+const scoredTd = (a) => (a.rush_td || 0) + (a.rec_td || 0) > 0;
+
+function tdEval(disabled, probOf) {
+  let ll = 0, brier = 0, n = 0;
+  const out = [];
+  for (const wk of weeks) {
+    const pr = buildProjector(sport, wk.model, { history: wk.history, disabled: new Set(disabled) });
+    for (const it of wk.items) {
+      const a = it.row;
+      const r = pr.project(it.p, it.g);
+      const p = Math.min(0.97, Math.max(0.005, probOf ? probOf(it.p, r) : r.td.anytime));
+      const y = scoredTd(a) ? 1 : 0;
+      ll -= y ? Math.log(p) : Math.log(1 - p);
+      brier += (p - y) ** 2;
+      n++;
+      out.push({ p, y, r });
+    }
+  }
+  return { ll: ll / n, brier: brier / n, out };
+}
+
+const tdFull = tdEval([]);
+const tdRow = (label, e) => console.log(`  ${label.padEnd(20)} ${e.ll.toFixed(4)}   ${e.brier.toFixed(4)}`);
+console.log('\nAnytime TD (rush/rec)          log loss  Brier');
+tdRow('TDs scored only', tdEval(FACTORS, (p) => 1 - Math.exp(-((p.avg.rush_td || 0) + (p.avg.rec_td || 0)))));
+tdRow('usage base only', tdEval(FACTORS));
+tdRow('full model', tdFull);
+for (const f of ['opp', 'rz', 'div', 'weather', 'vegas', 'script', 'hist', 'usage', 'qb', 'status']) tdRow(`without ${f}`, tdEval([f]));
+
+console.log('\nTD calibration: predicted vs actual scoring rate');
+for (const [lo, hi] of [[0, 0.1], [0.1, 0.2], [0.2, 0.3], [0.3, 0.45], [0.45, 1]]) {
+  const xs = tdFull.out.filter((x) => x.p >= lo && x.p < hi);
+  if (!xs.length) continue;
+  const pred = xs.reduce((s, x) => s + x.p, 0) / xs.length;
+  const act = xs.reduce((s, x) => s + x.y, 0) / xs.length;
+  console.log(`  ${(lo * 100).toFixed(0).padStart(2)}–${(hi * 100).toFixed(0)}%   n=${String(xs.length).padEnd(5)} predicted ${(pred * 100).toFixed(1)}%  actual ${(act * 100).toFixed(1)}%`);
+}
+
+// ---- QB passing TDs: P(2+) from a Poisson on projected pass TDs ----------------
+{
+  const pr = [];
+  for (const wk of weeks) {
+    const proj = buildProjector(sport, wk.model, { history: wk.history });
+    for (const it of wk.items) {
+      if (it.p.pos !== 'QB') continue;
+      const lam = proj.project(it.p, it.g).td.passLambda;
+      pr.push({ p: 1 - Math.exp(-lam) * (1 + lam), y: (it.row.pass_td || 0) >= 2 ? 1 : 0 });
+    }
+  }
+  console.log('\nQB 2+ passing TDs: predicted vs actual');
+  for (const [lo, hi] of [[0, 0.3], [0.3, 0.45], [0.45, 0.6], [0.6, 1]]) {
+    const xs = pr.filter((x) => x.p >= lo && x.p < hi);
+    if (!xs.length) continue;
+    const m = (f) => (100 * xs.reduce((s, x) => s + f(x), 0)) / xs.length;
+    console.log(`  ${(lo * 100).toFixed(0).padStart(2)}–${(hi * 100).toFixed(0)}%   n=${String(xs.length).padEnd(4)} predicted ${m((x) => x.p).toFixed(1)}%  actual ${m((x) => x.y).toFixed(1)}%`);
+  }
 }

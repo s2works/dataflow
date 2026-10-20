@@ -62,6 +62,37 @@ MAE penalizes any upward shift on right-skewed fantasy scores, so check both. Fa
 tiebreaker and context, not a lock. All weights live in
 `web/js/sports/nfl.js` → `projection`; re-run the backtest after changing them.
 
+### Touchdowns tab
+
+**Anytime TD** (rush or receiving) for every key player, with the no-vig
+**fair odds**: if a book pays more than that, the model sees value.
+
+1. **Usage-based expected TDs**: from play-by-play, each player's goal-line
+   carries (inside the 5), red-zone carries (6–20), red-zone targets and other
+   touches, × the league TD rate for each (a goal-line carry scores ~40% of
+   the time, a red-zone target ~26%, a carry outside the 20 under 1%).
+   Backtests showed this beats counting past TDs by a wide margin, so it's
+   the whole base. It also feeds the fantasy projections now.
+2. **Game factors**: the same as projections (Vegas total, opponent vs
+   position, weather, game script, divisional, rest, injuries/usage,
+   Questionable), plus a **red-zone trend** (last 3 games' red-zone usage vs
+   the sample).
+3. **Calibration**: P = 1 − e^−(0.1 + 0.7λ), fitted so predicted rates match
+   real scoring.
+
+| Predicted | Actual (backtest) |
+| --- | --- |
+| 10–20% | 15.8% (pred 15.7%) |
+| 20–30% | 24.7% (pred 24.7%) |
+| 30–45% | 34.7% (pred 35.7%) |
+| 45%+ | 55.1% (pred 52.4%) |
+
+Log loss 0.549 vs 0.698 for "TDs scored so far" (lower is better).
+
+**QB passing TDs**: projected passing TDs with 2+ / 3+ probabilities and
+fair odds. Honest caveat: this barely beats a coin flip in backtests, so
+projections are shrunk hard toward a league-typical 1.5.
+
 ### Injuries & line movement
 
 Each game page has an **Injury report** card (status, injury, the player's
@@ -135,7 +166,7 @@ web/index.html            dashboard shell
 web/styles.css
 web/js/app.js             views / UI
 web/js/engine.js          ranks, edges, player matchup math
-web/js/projections.js     player projection model + weather forecasts
+web/js/projections.js     player projection + touchdown model, weather forecasts
 web/js/sports/nfl.js      NFL stats, positions, projection weights, stadiums
 tools/backtest.mjs        projection accuracy check
 web/data/nfl/             generated JSON (committed)

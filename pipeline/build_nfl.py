@@ -34,6 +34,11 @@ RELEASES = "https://github.com/nflverse/nflverse-data/releases/download"
 PLAYER_STATS_URL = RELEASES + "/stats_player/stats_player_week_{season}.csv"
 SCHEDULE_URL = RELEASES + "/schedules/games.csv"
 INJURIES_URL = RELEASES + "/injuries/injuries_{season}.csv"
+PBP_URL = RELEASES + "/pbp/play_by_play_{season}.csv.gz"
+PBP_COLS = [
+    "game_id", "season_type", "yardline_100", "rush_attempt", "pass_attempt", "two_point_attempt",
+    "rusher_player_id", "receiver_player_id", "rush_touchdown", "pass_touchdown",
+]
 
 # How long a downloaded file is reused locally (the scheduled job starts clean).
 CACHE_HOURS = 1
@@ -94,7 +99,8 @@ POS_COLS = {
     "fantasy_points_ppr": "fpts",
 }
 
-PLAYER_COLS = POS_COLS
+RZ_COLS = ["car_gl", "car_rz", "tgt_rz"]
+PLAYER_COLS = POS_COLS  # plus RZ_COLS when play-by-play is available
 
 
 def fetch(url: str, cache_name: str, max_age_hours: float) -> bytes:
@@ -195,8 +201,9 @@ def build_player_games(stats: pd.DataFrame) -> tuple[list[dict], list[dict]]:
         .sort_values("name")
     )
 
+    extra = [c for c in RZ_COLS if c in s.columns]
     games = (
-        s[["player_id", "game_id", "week", "team", "opponent_team", *PLAYER_COLS]]
+        s[["player_id", "game_id", "week", "team", "opponent_team", *PLAYER_COLS, *extra]]
         .rename(columns={**PLAYER_COLS, "player_id": "id", "opponent_team": "opp"})
         .sort_values(["week", "game_id", "team"])
     )
@@ -247,6 +254,50 @@ def write_if_changed(path: Path, text: str) -> bool:
     return True
 
 
+def build_red_zone(season: int) -> tuple[pd.DataFrame | None, dict | None]:
+    """Per player-game red-zone usage from play-by-play, plus league TD rates.
+
+    car_gl  carries inside the 5      car_rz  carries at the 6-20
+    tgt_rz  targets inside the 20
+    td_rates: P(TD | opportunity) by zone, used to turn usage into expected TDs.
+    """
+    try:
+        raw = fetch(PBP_URL.format(season=season), f"pbp_{season}.csv.gz", CACHE_HOURS)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  no play-by-play for {season}: {exc}")
+        return None, None
+    pbp = pd.read_csv(io.BytesIO(raw), compression="gzip", usecols=PBP_COLS, low_memory=False)
+    pbp = pbp[pbp["season_type"].isin(["REG", "POST"]) & (pbp["two_point_attempt"] != 1)]
+
+    runs = pbp[(pbp["rush_attempt"] == 1) & pbp["rusher_player_id"].notna()].copy()
+    runs["zone"] = pd.cut(runs["yardline_100"], [0, 5, 20, 100], labels=["gl", "rz", "out"])
+    tgts = pbp[(pbp["pass_attempt"] == 1) & pbp["receiver_player_id"].notna()].copy()
+    tgts["zone"] = pd.cut(tgts["yardline_100"], [0, 20, 100], labels=["rz", "out"])
+
+    def rate(df, td_col, zone):
+        z = df[df["zone"] == zone]
+        return round(float(z[td_col].mean()), 4) if len(z) else None
+
+    td_rates = {
+        "rush": {z: rate(runs, "rush_touchdown", z) for z in ["gl", "rz", "out"]},
+        "rec": {z: rate(tgts, "pass_touchdown", z) for z in ["rz", "out"]},
+    }
+
+    car = (
+        runs[runs["zone"] != "out"]
+        .pivot_table(index=["game_id", "rusher_player_id"], columns="zone", values="rush_attempt", aggfunc="count", observed=False)
+        .rename(columns={"gl": "car_gl", "rz": "car_rz"})[["car_gl", "car_rz"]]
+        .rename_axis(index=["game_id", "player_id"])
+    )
+    tgt = (
+        tgts[tgts["zone"] == "rz"]
+        .groupby(["game_id", "receiver_player_id"]).size().rename("tgt_rz")
+        .rename_axis(index=["game_id", "player_id"])
+    )
+    rz = car.join(tgt, how="outer").fillna(0).astype(int).reset_index()
+    return rz, td_rates
+
+
 def build_season(season: int, games: pd.DataFrame) -> dict | None:
     print(f"Season {season}")
     try:
@@ -259,6 +310,11 @@ def build_season(season: int, games: pd.DataFrame) -> dict | None:
     stats["pos"] = stats["position"].map(POSITIONS)
     num_cols = list(set(TEAM_COLS) | set(POS_COLS))
     stats[num_cols] = stats[num_cols].fillna(0)
+
+    rz, td_rates = build_red_zone(season)
+    if rz is not None:
+        stats = stats.merge(rz, on=["game_id", "player_id"], how="left")
+        stats[RZ_COLS] = stats[RZ_COLS].fillna(0)
 
     schedule = build_schedule(games, season)
     team_games = build_team_games(stats, schedule)
@@ -278,6 +334,7 @@ def build_season(season: int, games: pd.DataFrame) -> dict | None:
         "players": players,
         "player_games": player_games,
         "injuries": build_injuries(season),
+        "td_rates": td_rates,
         "line_history": update_line_history(season, schedule),
     }
 

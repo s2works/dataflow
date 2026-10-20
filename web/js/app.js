@@ -24,6 +24,7 @@ const state = {
   rankSide: 'off',
   sort: {},
   expanded: null,
+  tdView: 'any',
 };
 let data = null;
 let model = null;
@@ -142,7 +143,7 @@ function recompute() {
 
 function readHash(doRender = true) {
   const [tab, game] = location.hash.replace(/^#/, '').split('/');
-  state.tab = ['matchups', 'players', 'proj', 'dvp', 'rankings'].includes(tab) ? tab : 'matchups';
+  state.tab = ['matchups', 'players', 'proj', 'td', 'dvp', 'rankings'].includes(tab) ? tab : 'matchups';
   state.game = state.tab === 'matchups' && game ? game : null;
   if (!doRender || !model) return;
   // Opening a game from another week re-ranks using games before that week.
@@ -161,7 +162,7 @@ function render() {
     view.innerHTML = `<div class="card">No games played before this week yet — pick a later week or the previous season.</div>`;
     return;
   }
-  const views = { matchups: state.game ? viewGame : viewWeek, players: viewPlayers, proj: viewProjections, dvp: viewDvp, rankings: viewRankings };
+  const views = { matchups: state.game ? viewGame : viewWeek, players: viewPlayers, proj: viewProjections, td: viewTouchdowns, dvp: viewDvp, rankings: viewRankings };
   view.innerHTML = views[state.tab]();
   wire(view);
 }
@@ -378,6 +379,7 @@ function viewGame() {
         <div class="card"><h3>Line movement</h3>${lineMovement(g)}</div>
         <div class="card"><h3>Injury report</h3>${injuryCard(a, h)}</div>
       </div>
+      <div class="card"><h3>Touchdown chances</h3>${tdTable('game-td', projRows().filter((r) => r.p.team === a || r.p.team === h), 10)}</div>
       <div class="card"><h3>Projections</h3>${projTable('game-proj', projRows().filter((r) => r.p.team === a || r.p.team === h))}</div>
       <div class="card"><h3>Player edges</h3>${playersTable('game-players', players)}</div>
       <div class="grid two">${posBlocks}</div>
@@ -584,7 +586,7 @@ function injuryCard(a, h) {
     <tr><th class="l">Player</th><th class="l">Status</th><th>Usage/G</th><th class="l">Volume goes to</th></tr>
     ${rows.map(({ team, e, usage, gains }) => `<tr>
       <td class="l">${team} <span class="pos">${e.pos}</span> ${esc(e.name)}</td>
-      <td class="l"><span class="inj inj-${e.status.toLowerCase()}">${e.status}</span> <span class="muted">${esc(e.injury ?? '')}</span></td>
+      <td class="l wrap"><span class="inj inj-${e.status.toLowerCase()}">${e.status}</span> <span class="muted">${esc(e.injury ?? '')}</span></td>
       <td>${usage || '<span class="muted">–</span>'}</td>
       <td class="l muted wrap">${gains.length ? esc(gains.slice(0, 3).join(', ')) : ''}</td>
     </tr>`).join('')}
@@ -646,6 +648,90 @@ function lineMovement(g) {
 }
 
 const fmtMl = (v) => (v == null ? '–' : v > 0 ? `+${v}` : `${v}`);
+
+// ------------------------------------------------------- touchdowns ----
+// American odds equivalent of a probability (no vig): a fair price to compare
+// against a sportsbook's.
+function fairOdds(p) {
+  if (!(p > 0 && p < 1)) return '–';
+  return p >= 0.5 ? `${Math.round((-100 * p) / (1 - p))}` : `+${Math.round((100 * (1 - p)) / p)}`;
+}
+const pctFmt = (p) => `${(p * 100).toFixed(0)}%`;
+
+function tdWhy(r, impactKey = 'tdImpact') {
+  return r.factors
+    .filter((f) => Math.abs(f[impactKey]) >= 0.01)
+    .sort((a, b) => Math.abs(b[impactKey]) - Math.abs(a[impactKey]))
+    .slice(0, 3)
+    .map((f) => `<span class="chip" style="background:${edgeColor(f[impactKey] * 100, 15)}">${esc(f.text)} <strong>${pctTxt(f[impactKey])}</strong></span>`)
+    .join('') || '<span class="muted">No strong factors.</span>';
+}
+
+function tdTable(id, rows, limit = 0) {
+  rows = rows
+    .filter(({ r }) => r.td.lambda > 0.005)
+    .map((x) => ({ ...x, d: x.r.td.baseLambda > 0 ? x.r.td.lambda / x.r.td.baseLambda - 1 : 0 }));
+  if (limit) rows = rows.sort((a, b) => b.r.td.anytime - a.r.td.anytime).slice(0, limit);
+  const cols = [
+    { id: 'name', label: 'Player', cls: 'l', sort: (x) => x.p.name, cell: (x) => `${esc(x.p.name)}${injuryBadge(x.p.id)}` },
+    { id: 'pos', label: 'Pos', cls: 'c', sort: (x) => x.p.pos, cell: (x) => `<span class="pos">${x.p.pos}</span>` },
+    { id: 'game', label: 'Game', cls: 'l', cell: (x) => `${x.p.team} <span class="vs">${x.r.isHome ? 'vs' : '@'}</span> ${x.r.opp}` },
+    {
+      id: 'any', label: 'Anytime TD', title: 'Probability of at least one rushing or receiving TD',
+      sort: (x) => x.r.td.anytime, bg: (x) => deltaColor(x.d), cell: (x) => `<strong>${pctFmt(x.r.td.anytime)}</strong>`,
+    },
+    { id: 'odds', label: 'Fair odds', title: 'No-vig American odds for that probability. A book paying more than this is +EV on the model.', sort: (x) => x.r.td.anytime, cell: (x) => fairOdds(x.r.td.anytime) },
+    { id: 'lam', label: 'Exp TDs', title: 'Projected rushing + receiving TDs this game', sort: (x) => x.r.td.lambda, cell: (x) => x.r.td.lambda.toFixed(2) },
+    { id: 'delta', label: 'vs Usual', title: 'This matchup vs the player’s usage-based TD expectation', sort: (x) => x.d, bg: (x) => deltaColor(x.d), cell: (x) => pctTxt(x.d) },
+    { id: 'rz', label: 'RZ looks/G', title: 'Red-zone carries + red-zone targets per game', sort: (x) => x.r.td.rzLooks, cell: (x) => x.r.td.rzLooks.toFixed(1) },
+    { id: 'gl', label: 'GL car/G', title: 'Carries inside the 5 per game', sort: (x) => x.r.td.glCarries, cell: (x) => x.r.td.glCarries.toFixed(1) },
+    { id: 'act', label: 'TDs/G', title: 'Rush + rec TDs actually scored per game in the sample', sort: (x) => x.r.td.actual, cell: (x) => x.r.td.actual.toFixed(2) },
+    { id: 'why', label: 'Why', cls: 'l wrap', cell: (x) => `<div class="chips">${tdWhy(x.r)}</div>` },
+  ];
+  return table(id, cols, rows, { col: 'any', asc: false });
+}
+
+function qbTdTable(id, rows) {
+  const C = sport.projection.td.passCalib;
+  rows = rows
+    .filter(({ p, r }) => p.pos === 'QB' && r.td.passLambda != null)
+    .map((x) => {
+      const lam = x.r.td.passLambda;
+      const baseLam = C.mean + C.scale * ((x.r.base.pass_td || 0) - C.mean);
+      const p2 = 1 - Math.exp(-lam) * (1 + lam);
+      const p3 = 1 - Math.exp(-lam) * (1 + lam + (lam * lam) / 2);
+      return { ...x, lam, p2, p3, d: baseLam > 0 ? lam / baseLam - 1 : 0 };
+    });
+  const cols = [
+    { id: 'name', label: 'QB', cls: 'l', sort: (x) => x.p.name, cell: (x) => `${esc(x.p.name)}${injuryBadge(x.p.id)}` },
+    { id: 'game', label: 'Game', cls: 'l', cell: (x) => `${x.p.team} <span class="vs">${x.r.isHome ? 'vs' : '@'}</span> ${x.r.opp}` },
+    { id: 'lam', label: 'Pass TDs', title: 'Projected passing TDs (shrunk toward league average, as backtests require)', sort: (x) => x.lam, bg: (x) => deltaColor(x.d), cell: (x) => `<strong>${x.lam.toFixed(2)}</strong>` },
+    { id: 'p2', label: '2+ TD', sort: (x) => x.p2, bg: (x) => deltaColor(x.d), cell: (x) => `${pctFmt(x.p2)} <span class="rk">${fairOdds(x.p2)}</span>` },
+    { id: 'p3', label: '3+ TD', sort: (x) => x.p3, cell: (x) => `${pctFmt(x.p3)} <span class="rk">${fairOdds(x.p3)}</span>` },
+    { id: 'avg', label: 'Pass TD/G', title: 'Actual passing TDs per game in the sample', sort: (x) => x.r.base.pass_td, cell: (x) => (x.r.base.pass_td || 0).toFixed(2) },
+    { id: 'rush', label: 'Rush TD', title: 'Anytime rushing TD probability', sort: (x) => x.r.td.anytime, cell: (x) => pctFmt(x.r.td.anytime) },
+    { id: 'why', label: 'Why', cls: 'l wrap', cell: (x) => `<div class="chips">${tdWhy(x.r, 'impact')}</div>` },
+  ];
+  return table(id, cols, rows, { col: 'lam', asc: false });
+}
+
+function viewTouchdowns() {
+  let rows = projRows();
+  const q = state.search.trim().toLowerCase();
+  if (q) rows = rows.filter((x) => x.p.name.toLowerCase().includes(q) || x.p.team.toLowerCase() === q);
+  const any = state.tdView === 'any';
+  if (any && state.pos !== 'ALL') rows = rows.filter((x) => x.p.pos === state.pos);
+  return `<div class="toolbar">
+      ${seg('tdView', [['any', 'Anytime TD'], ['qb', 'QB passing TDs']])}
+      ${any ? seg('pos', [['ALL', 'All'], ...Object.keys(sport.positions).map((p) => [p, p])]) : ''}
+      <input id="search" type="search" placeholder="Player or team…" value="${esc(state.search)}">
+      <span class="spacer"></span>
+      <span class="muted">${any
+        ? 'Built from red-zone and goal-line usage × league TD rates, then Vegas total, opponent, weather, game script, red-zone trend and injuries. Backtested: predicted rates match actual scoring within ~1–3 pts per bucket.'
+        : 'Passing TDs are hard to predict: backtests show only a small edge over a coin flip, so numbers are shrunk hard toward average. Treat as a lean, not a lock.'} ${sampleNote()}</span>
+    </div>
+    <div class="card">${any ? tdTable('td', rows) : qbTdTable('qbtd', rows)}</div>`;
+}
 
 function viewDvp() {
   const metrics = [

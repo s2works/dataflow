@@ -139,6 +139,12 @@ export default {
     // the projection absorb (the rest goes to depth players), extra weight for
     // the same position, backup-QB hit on pass catchers, Questionable haircut.
     injury: { absorb: 0.7, samePosWeight: 1.5, backupQb: 0.9, questionable: 0.95, cap: 1.6 },
+    // Touchdowns. Base = xWeight × expected TDs from usage (goal-line / red-zone
+    // carries and targets × league TD rate per opportunity) + the rest from TDs
+    // actually scored. Red-zone trend compares recent usage to the sample.
+    td: { xWeight: 1, trendGames: 3, trendWeight: 0.15, trendCap: 0.25, calib: { floor: 0.1, scale: 0.7 },
+      // QB pass TDs shrink toward a league-typical starter (backtest-fitted).
+      passCalib: { mean: 1.5, scale: 0.3 } },
     totalClamp: [0.6, 1.6],
   },
 
@@ -193,5 +199,5 @@ export default {
   // nflverse schedule times are US Eastern.
   scheduleTimezone: 'America/New_York',
 
-  rawColumns: ['cmp', 'pass_att', 'pass_yds', 'pass_td', 'int', 'rush_att', 'rush_yds', 'rush_td', 'tgt', 'rec', 'rec_yds', 'rec_td', 'fpts'],
+  rawColumns: ['cmp', 'pass_att', 'pass_yds', 'pass_td', 'int', 'rush_att', 'rush_yds', 'rush_td', 'tgt', 'rec', 'rec_yds', 'rec_td', 'fpts', 'car_gl', 'car_rz', 'tgt_rz'],
 };

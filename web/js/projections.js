@@ -65,6 +65,19 @@ export function buildProjector(sport, model, { history = [], weather = new Map()
 
   const fptsOf = (stats, keys) => keys.reduce((s, k) => s + (cfg.scoring[k] || 0) * (stats[k] || 0), 0);
 
+  // ---- expected TDs from usage ---------------------------------------------
+  // League P(TD) per opportunity by field zone, pooled over loaded seasons.
+  const rateSets = [...history, data].map((d) => d.td_rates).filter(Boolean);
+  const R = rateSets.length
+    ? {
+        rush: Object.fromEntries(['gl', 'rz', 'out'].map((z) => [z, rateSets.reduce((s, r) => s + r.rush[z], 0) / rateSets.length])),
+        rec: Object.fromEntries(['rz', 'out'].map((z) => [z, rateSets.reduce((s, r) => s + r.rec[z], 0) / rateSets.length])),
+      }
+    : null;
+  const xRush = (a) => (R ? (a.car_gl || 0) * R.rush.gl + (a.car_rz || 0) * R.rush.rz + Math.max(0, (a.rush_att || 0) - (a.car_gl || 0) - (a.car_rz || 0)) * R.rush.out : null);
+  const xRec = (a) => (R ? (a.tgt_rz || 0) * R.rec.rz + Math.max(0, (a.tgt || 0) - (a.tgt_rz || 0)) * R.rec.out : null);
+  const rowsAvg = (rows, k) => rows.reduce((s, r) => s + (r[k] || 0), 0) / (rows.length || 1);
+
   // ---- injuries & vacated usage ------------------------------------------
   const I = cfg.injury;
   const report = new Map(); // player id -> injury report entry for this week
@@ -168,6 +181,13 @@ export function buildProjector(sport, model, { history = [], weather = new Map()
     const isHome = g.home === pl.team;
     const opp = isHome ? g.away : g.home;
     const base = Object.fromEntries(keys.map((k) => [k, pl.avg[k] || 0]));
+    // TD base: blend usage-based expected TDs with TDs actually scored.
+    const TD = cfg.td;
+    const xr = xRush(pl.avg), xc = xRec(pl.avg);
+    if (R && pl.avg.car_gl != null) {
+      if ('rush_td' in base) base.rush_td = TD.xWeight * xr + (1 - TD.xWeight) * base.rush_td;
+      if ('rec_td' in base) base.rec_td = TD.xWeight * xc + (1 - TD.xWeight) * base.rec_td;
+    }
     const cat = (k) => (cfg.tdStats.includes(k) ? 'td' : cfg.category[k]);
     const factors = [];
 
@@ -196,9 +216,29 @@ export function buildProjector(sport, model, { history = [], weather = new Map()
         const recent = rows.slice(0, F.games);
         const ravg = (k) => recent.reduce((s, r) => s + (r[k] || 0), 0) / recent.length;
         const mult = {};
-        for (const k of keys) mult[k] = base[k] > 0 ? clamp(1 + F.weight * (ravg(k) / base[k] - 1), 1 - F.cap, 1 + F.cap) : 1;
+        // TDs are too noisy for this; the red-zone trend factor covers them.
+        for (const k of keys) mult[k] = base[k] > 0 && !['rush_td', 'rec_td'].includes(k) ? clamp(1 + F.weight * (ravg(k) / base[k] - 1), 1 - F.cap, 1 + F.cap) : 1;
         const rf = fptsOf(Object.fromEntries(keys.map((k) => [k, ravg(k)])), keys);
         factors.push({ id: 'form', label: 'Recent form', text: `Last ${F.games}: ${rf.toFixed(1)} FPTS/G vs ${fptsOf(base, keys).toFixed(1)} avg`, m: (k) => mult[k] });
+      }
+    }
+
+    // 2b. Red-zone trend: recent expected TDs (usage) vs the sample.
+    if (R) {
+      const rows = logs.get(pl.id) || [];
+      if (rows.length > TD.trendGames && xr + xc > 0.02) {
+        const recent = rows.slice(0, TD.trendGames);
+        const rr = xRush({ car_gl: rowsAvg(recent, 'car_gl'), car_rz: rowsAvg(recent, 'car_rz'), rush_att: rowsAvg(recent, 'rush_att') });
+        const rc = xRec({ tgt_rz: rowsAvg(recent, 'tgt_rz'), tgt: rowsAvg(recent, 'tgt') });
+        const mR = xr > 0.01 ? clamp(1 + TD.trendWeight * (rr / xr - 1), 1 - TD.trendCap, 1 + TD.trendCap) : 1;
+        const mC = xc > 0.01 ? clamp(1 + TD.trendWeight * (rc / xc - 1), 1 - TD.trendCap, 1 + TD.trendCap) : 1;
+        const opp = (rws) => rowsAvg(rws, 'car_gl') + rowsAvg(rws, 'car_rz') + rowsAvg(rws, 'tgt_rz');
+        const sample = rows.slice(0, pl.n);
+        factors.push({
+          id: 'rz', label: 'Red-zone trend',
+          text: `Red-zone looks last ${TD.trendGames}: ${opp(recent).toFixed(1)}/G vs ${opp(sample).toFixed(1)} avg`,
+          m: (k) => (k === 'rush_td' ? mR : k === 'rec_td' ? mC : 1),
+        });
       }
     }
 
@@ -325,9 +365,13 @@ export function buildProjector(sport, model, { history = [], weather = new Map()
     const proj = combine(null);
     const baseF = fptsOf(base, keys);
     const projF = fptsOf(proj, keys);
+    const tdOf = (st) => (st.rush_td || 0) + (st.rec_td || 0);
+    const projTd = tdOf(proj);
     for (const f of factors) {
-      const without = fptsOf(combine(f), keys);
+      const w = combine(f);
+      const without = fptsOf(w, keys);
       f.impact = without > 0 ? projF / without - 1 : 0;
+      f.tdImpact = tdOf(w) > 0 ? projTd / tdOf(w) - 1 : 0;
     }
     factors.sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact));
 
@@ -337,6 +381,18 @@ export function buildProjector(sport, model, { history = [], weather = new Map()
       baseFpts: baseF, projFpts: projF,
       delta: baseF > 0 ? projF / baseF - 1 : 0,
       factors,
+      // Touchdowns: expected rush+rec TDs (λ), P(anytime) assuming Poisson.
+      td: {
+        lambda: projTd,
+        baseLambda: tdOf(base),
+        // Calibrated against backtests: raw Poisson is too extreme at both ends.
+        anytime: 1 - Math.exp(-(TD.calib.floor + TD.calib.scale * projTd)),
+        xRush: xr, xRec: xc,
+        actual: (pl.avg.rush_td || 0) + (pl.avg.rec_td || 0),
+        rzLooks: (pl.avg.car_gl || 0) + (pl.avg.car_rz || 0) + (pl.avg.tgt_rz || 0),
+        glCarries: pl.avg.car_gl || 0,
+        passLambda: proj.pass_td != null ? TD.passCalib.mean + TD.passCalib.scale * (proj.pass_td - TD.passCalib.mean) : null,
+      },
     };
   }
 
