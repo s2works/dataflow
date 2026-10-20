@@ -99,5 +99,95 @@ export default {
     TE: [['tgt', 'Tgt'], ['rec', 'Rec'], ['rec_yds', 'Rec Yds'], ['rec_td', 'Rec TD']],
   },
 
+  // ---- projections ---------------------------------------------------------
+  projection: {
+    // Stats projected per position (fantasy points are rebuilt from these).
+    stats: {
+      QB: ['pass_att', 'pass_yds', 'pass_td', 'int', 'rush_yds', 'rush_td'],
+      RB: ['rush_att', 'rush_yds', 'rush_td', 'tgt', 'rec', 'rec_yds', 'rec_td'],
+      WR: ['tgt', 'rec', 'rec_yds', 'rec_td'],
+      TE: ['tgt', 'rec', 'rec_yds', 'rec_td'],
+    },
+    labels: {
+      pass_att: 'Att', pass_yds: 'Pass Yds', pass_td: 'Pass TD', int: 'INT', rush_att: 'Car',
+      rush_yds: 'Rush Yds', rush_td: 'Rush TD', tgt: 'Tgt', rec: 'Rec', rec_yds: 'Rec Yds', rec_td: 'Rec TD',
+    },
+    // Which game-level effects a stat responds to.
+    category: {
+      pass_att: 'pass', pass_yds: 'pass', pass_td: 'pass', int: 'none', tgt: 'pass', rec: 'pass', rec_yds: 'pass', rec_td: 'pass',
+      rush_att: 'rush', rush_yds: 'rush', rush_td: 'rush',
+    },
+    tdStats: ['pass_td', 'rush_td', 'rec_td'],
+    // PPR scoring used for projected fantasy points.
+    scoring: { pass_yds: 0.04, pass_td: 4, int: -2, rush_yds: 0.1, rush_td: 6, rec: 1, rec_yds: 0.1, rec_td: 6 },
+    // Regression: a factor observed over n games is trusted n / (n + k).
+    // Weights below were tuned by backtesting 2025 wks 4-18 + 2026 (see README).
+    regress: { opponent: 30, opponentTd: 60, history: 8 },
+    recentForm: { games: 3, weight: 0.15, cap: 0.15 },
+    history: { cap: 0.12 },
+    vegas: { yardsWeight: 0.5, tdWeight: 0.8, cap: 0.1 },
+    gameScript: { rushPerPoint: 0.008, passPerPoint: -0.004, cap: 0.08 },
+    rest: { perDay: 0.004, maxDays: 7 },
+    // Weather effects (outdoor stadiums only). Wind in mph, temp in °F.
+    weather: {
+      windFrom: 10, passPerMph: -0.008, rushPerMph: 0.003,
+      coldBelow: 35, passPerDegree: -0.003,
+      rain: { pass: -0.05, rush: 0.02 }, snow: { pass: -0.08, rush: 0 },
+      passFloor: 0.8, rushCap: 1.06,
+    },
+    totalClamp: [0.6, 1.6],
+  },
+
+  // Stadium coordinates for weather. `indoor` covers domes and retractable
+  // roofs (which close in bad weather). Keys are nflverse stadium_id.
+  stadiums: {
+    ATL97: { lat: 33.755, lon: -84.401, indoor: true },
+    BAL00: { lat: 39.278, lon: -76.623 },
+    BOS00: { lat: 42.091, lon: -71.264 },
+    BUF00: { lat: 42.774, lon: -78.787 },
+    BUF01: { lat: 42.774, lon: -78.787 },
+    CAR00: { lat: 35.226, lon: -80.853 },
+    CHI98: { lat: 41.862, lon: -87.617 },
+    CIN00: { lat: 39.095, lon: -84.516 },
+    CLE00: { lat: 41.506, lon: -81.699 },
+    DAL00: { lat: 32.748, lon: -97.093, indoor: true },
+    DEN00: { lat: 39.744, lon: -105.02 },
+    DET00: { lat: 42.34, lon: -83.046, indoor: true },
+    GNB00: { lat: 44.501, lon: -88.062 },
+    HOU00: { lat: 29.685, lon: -95.411, indoor: true },
+    IND00: { lat: 39.76, lon: -86.164, indoor: true },
+    JAX00: { lat: 30.324, lon: -81.637 },
+    KAN00: { lat: 39.049, lon: -94.484 },
+    LAX01: { lat: 33.953, lon: -118.339, indoor: true },
+    MIA00: { lat: 25.958, lon: -80.239 },
+    MIN01: { lat: 44.974, lon: -93.258, indoor: true },
+    NAS00: { lat: 36.166, lon: -86.771 },
+    NOR00: { lat: 29.951, lon: -90.081, indoor: true },
+    NYC01: { lat: 40.814, lon: -74.074 },
+    PHI00: { lat: 39.901, lon: -75.168 },
+    PHO00: { lat: 33.528, lon: -112.263, indoor: true },
+    PIT00: { lat: 40.447, lon: -80.016 },
+    SEA00: { lat: 47.595, lon: -122.332 },
+    SFO01: { lat: 37.403, lon: -121.97 },
+    TAM00: { lat: 27.976, lon: -82.503 },
+    VEG00: { lat: 36.091, lon: -115.184, indoor: true },
+    WAS00: { lat: 38.908, lon: -76.864 },
+    // International / neutral sites
+    LON00: { lat: 51.556, lon: -0.28 },
+    LON02: { lat: 51.604, lon: -0.066 },
+    GER00: { lat: 48.219, lon: 11.625 },
+    MUN01: { lat: 48.219, lon: 11.625 },
+    FRA00: { lat: 50.069, lon: 8.646 },
+    PAR00: { lat: 48.924, lon: 2.36 },
+    MAD01: { lat: 40.453, lon: -3.688, indoor: true },
+    MEX00: { lat: 19.303, lon: -99.15 },
+    SAO00: { lat: -23.545, lon: -46.474 },
+    RIO00: { lat: -22.912, lon: -43.23 },
+    MEL00: { lat: -37.82, lon: 144.983 },
+    DUB00: { lat: 53.335, lon: -6.228 },
+  },
+  // nflverse schedule times are US Eastern.
+  scheduleTimezone: 'America/New_York',
+
   rawColumns: ['cmp', 'pass_att', 'pass_yds', 'pass_td', 'int', 'rush_att', 'rush_yds', 'rush_td', 'tgt', 'rec', 'rec_yds', 'rec_td', 'fpts'],
 };

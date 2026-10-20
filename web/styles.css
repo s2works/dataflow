@@ -97,6 +97,12 @@ tr:last-child td { border-bottom: 0; }
 .player { display: flex; align-items: center; gap: 8px; }
 .player img { width: 26px; height: 26px; border-radius: 50%; object-fit: cover; background: var(--bg); }
 .pos { font-size: 11px; font-weight: 700; padding: 1px 5px; border-radius: 3px; background: var(--bg); color: var(--muted); }
+.clickable { cursor: pointer; }
+.clickable:hover td { box-shadow: inset 0 0 0 9999px rgba(127, 127, 127, .06); }
+tr.detail > td { background: var(--bg); padding: 12px; white-space: normal; }
+tr.detail table td, tr.detail table th { background: transparent; }
+td .chips { min-width: 240px; }
+.matchup-head .muted + .muted::before { content: "· "; }
 .back { cursor: pointer; color: var(--accent); background: none; border: 0; font: inherit; padding: 0; margin-bottom: 10px; }
 .matchup-head { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: baseline; margin-bottom: 12px; }
 .matchup-head h2 { margin: 0; font-size: 20px; }

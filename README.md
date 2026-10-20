@@ -10,6 +10,7 @@ script and one sport config.
 | --- | --- |
 | **Matchups** | Every game in the selected week, with chips for the biggest offense-vs-defense mismatches. Click a game for the full breakdown: team stats, position-by-position (QB/RB/WR/TE) stats, and the players in that game. |
 | **Player Edges** | Every key-role player playing that week, with what the opponent allows to their position, a matchup multiplier, and matchup-adjusted fantasy points / key stat. |
+| **Projections** | Projected stat line + PPR fantasy points for every key-role player that week, colored by how the spot compares to the player's own average, with the top reasons listed. Click a row for every factor and the full stat line. Each game page also has a projections table. |
 | **Defense vs Position** | What each defense allows per game to QB, RB, WR, TE (fantasy points, yards, receptions, TDs), ranked and color-coded, with that week's opponent. |
 | **Team Rankings** | Offense and defense ranks for every team stat. |
 
@@ -29,6 +30,32 @@ offense (sacks, turnovers) the ranks are flipped automatically.
 position: `Matchup × = opponent allowed ÷ league-average allowed`. A 1.40× on a
 TE means that defense gives up 40% more fantasy points to tight ends than
 average; *Adj FPTS* is the player's average × that multiplier.
+
+### How projections work
+
+`projection = player average × Π(factors)`, per stat (targets, yards, TDs…);
+fantasy points are rebuilt from the projected stats. Each factor's impact is
+how much projected points move when that one factor is removed — those are the
+percentages shown in **Why**.
+
+| Factor | What it does |
+| --- | --- |
+| Vegas implied total | `(total ± spread) / 2` vs the team's points per game. Strongest single factor. |
+| Opponent vs position | What the opponent allows to the position, per stat, heavily regressed (most of it is already in the Vegas line). |
+| Weather | Outdoor stadiums only. Wind > 10 mph, cold < 35°F, rain or snow cut passing and nudge rushing. Live forecast from Open-Meteo for games within ~15 days; recorded weather for past games. Domes and retractable roofs are neutral. |
+| Divisional game | League-wide divisional vs non-divisional production (from the data). |
+| Game script | Favorites run more, underdogs throw more (spread ≥ 3). |
+| Rest | Days of rest vs the opponent (bye weeks, short weeks). |
+| History vs opponent | The player's past games against this team (this and last season), regressed. |
+| Recent form | Last 3 games vs the sample average. |
+| Home / road | Shown, but only applied when there's no Vegas line. Backtests showed the line already prices it in. |
+
+**Backtest** (`node tools/backtest.mjs`, 2025 wks 4–18 + 2026): mean absolute
+error 5.63 PPR pts vs 5.74 for the plain average, and the colors line up with
+results — players flagged **≥ +10%** beat their average 56.5% of the time,
+**≤ −10%** only 34.9%. Fantasy points are noisy; treat projections as a
+tiebreaker and context, not a lock. All weights live in
+`web/js/sports/nfl.js` → `projection`; re-run the backtest after changing them.
 
 ### Controls
 
@@ -55,7 +82,9 @@ season and commits it.
 
 All data comes from [nflverse](https://github.com/nflverse/nflverse-data)
 (public, free): weekly player stats and the schedule, which includes betting
-lines (spread, total, moneylines). Team totals are summed from player stats;
+lines (spread, total, moneylines), rest days and recorded game weather.
+Upcoming-game forecasts are fetched in the browser from
+[Open-Meteo](https://open-meteo.com) (free, no API key). Team totals are summed from player stats;
 points come from final scores. Fantasy points are PPR.
 
 ## Adding another sport
@@ -76,6 +105,8 @@ web/index.html            dashboard shell
 web/styles.css
 web/js/app.js             views / UI
 web/js/engine.js          ranks, edges, player matchup math
-web/js/sports/nfl.js      NFL stat + position definitions
+web/js/projections.js     player projection model + weather forecasts
+web/js/sports/nfl.js      NFL stats, positions, projection weights, stadiums
+tools/backtest.mjs        projection accuracy check
 web/data/nfl/             generated JSON (committed)
 ```

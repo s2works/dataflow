@@ -123,7 +123,8 @@ def build_schedule(games: pd.DataFrame, season: int) -> pd.DataFrame:
         "game_id", "game_type", "week", "gameday", "weekday", "gametime",
         "away_team", "home_team", "away_score", "home_score", "location",
         "spread_line", "total_line", "away_moneyline", "home_moneyline",
-        "div_game", "roof", "stadium",
+        "div_game", "roof", "stadium", "stadium_id", "temp", "wind",
+        "away_rest", "home_rest",
     ]
     g = g[keep].rename(columns={"away_team": "away", "home_team": "home"})
     return g.sort_values(["week", "gameday", "gametime", "game_id"])

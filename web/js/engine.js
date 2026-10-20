@@ -130,6 +130,16 @@ export function buildModel(sport, data, { beforeWeek = Infinity, lastN = 0 } = {
     });
   }
 
+  // Only one QB per team counts: whoever threw the most in the team's latest game.
+  const starter = new Map();
+  for (const p of players) {
+    if (p.pos !== 'QB' || !p.relevant) continue;
+    const last = pgames.get(p.id).find((r) => r.game_id === team[p.team].games[0]);
+    const att = last?.pass_att ?? 0;
+    if (!starter.has(p.team) || att > starter.get(p.team).att) starter.set(p.team, { id: p.id, att });
+  }
+  for (const p of players) if (p.pos === 'QB' && p.relevant && starter.get(p.team)?.id !== p.id) p.relevant = false;
+
   // ---- public API ----------------------------------------------------------
   const model = {
     sport, data, teams: active, N, team, players, beforeWeek, lastN,

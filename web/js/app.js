@@ -1,5 +1,6 @@
 import nfl from './sports/nfl.js';
 import { buildModel, edgeColor, rankColor, ordinal } from './engine.js';
+import { buildProjector, fetchForecasts, weatherLabel } from './projections.js';
 
 const SPORTS = { nfl };
 const sport = SPORTS.nfl;
@@ -22,10 +23,14 @@ const state = {
   dvpMetric: 'fpts',
   rankSide: 'off',
   sort: {},
+  expanded: null,
 };
 let data = null;
 let model = null;
+let projector = null;
+let history = [];
 const cache = new Map();
+const forecasts = new Map(); // game_id -> forecast (fetched in the browser)
 
 // ---------------------------------------------------------------- boot ----
 async function boot() {
@@ -56,6 +61,10 @@ async function loadSeason(season) {
   state.season = season;
   if (!cache.has(season)) cache.set(season, await fetchJSON(`${sport.dataPath}/${season}.json`));
   data = cache.get(season);
+  // The previous season feeds league factors and player-vs-opponent history.
+  history = [];
+  if (!cache.has(season - 1)) cache.set(season - 1, await fetchJSON(`${sport.dataPath}/${season - 1}.json`).catch(() => null));
+  if (cache.get(season - 1)) history.push(cache.get(season - 1));
 
   // Weeks: default to the first week with unplayed games.
   const weeks = [...new Map(data.schedule.map((g) => [g.week, g.game_type])).entries()];
@@ -74,12 +83,21 @@ async function loadSeason(season) {
 
 function recompute() {
   model = buildModel(sport, data, { beforeWeek: state.week, lastN: state.lastN });
+  projector = buildProjector(sport, model, { history, weather: forecasts });
   render();
+  // Pull live forecasts for this week's outdoor games, then re-project.
+  const pending = weekGames().filter((g) => !forecasts.has(g.game_id));
+  if (pending.length) {
+    fetchForecasts(sport, pending, forecasts).then(() => {
+      projector = buildProjector(sport, model, { history, weather: forecasts });
+      render();
+    });
+  }
 }
 
 function readHash(doRender = true) {
   const [tab, game] = location.hash.replace(/^#/, '').split('/');
-  state.tab = ['matchups', 'players', 'dvp', 'rankings'].includes(tab) ? tab : 'matchups';
+  state.tab = ['matchups', 'players', 'proj', 'dvp', 'rankings'].includes(tab) ? tab : 'matchups';
   state.game = state.tab === 'matchups' && game ? game : null;
   if (!doRender || !model) return;
   // Opening a game from another week re-ranks using games before that week.
@@ -98,7 +116,7 @@ function render() {
     view.innerHTML = `<div class="card">No games played before this week yet — pick a later week or the previous season.</div>`;
     return;
   }
-  const views = { matchups: state.game ? viewGame : viewWeek, players: viewPlayers, dvp: viewDvp, rankings: viewRankings };
+  const views = { matchups: state.game ? viewGame : viewWeek, players: viewPlayers, proj: viewProjections, dvp: viewDvp, rankings: viewRankings };
   view.innerHTML = views[state.tab]();
   wire(view);
 }
@@ -212,6 +230,12 @@ function wire(root) {
     el.focus();
     el.setSelectionRange(pos, pos);
   });
+  root.querySelectorAll('[data-expand]').forEach((el) =>
+    el.addEventListener('click', () => {
+      state.expanded = state.expanded === el.dataset.expand ? null : el.dataset.expand;
+      render();
+    }),
+  );
   root.querySelector('.back')?.addEventListener('click', () => (location.hash = 'matchups'));
 }
 
@@ -242,6 +266,7 @@ function viewWeek() {
     return `<div class="card game" data-game="${g.game_id}">
       <div class="teams"><span>${g.away}</span><span class="vs">@</span><span>${g.home}</span></div>
       <div class="when">${esc(gameLine(g))}</div>
+      <div class="when">${esc(weatherLabel(projector.gameWeather(g)))}</div>
       <div class="chips">${chips.join('') || '<span class="muted">No large edges.</span>'}</div>
     </div>`;
   });
@@ -279,12 +304,13 @@ function viewGame() {
     .join('');
 
   return `<button class="back">← All games</button>
-    <div class="matchup-head"><h2>${esc(teamName(a))} @ ${esc(teamName(h))}</h2><span class="muted">${esc(gameLine(g))}</span></div>
+    <div class="matchup-head"><h2>${esc(teamName(a))} @ ${esc(teamName(h))}</h2><span class="muted">${esc(gameLine(g))}</span><span class="muted">${esc(weatherLabel(projector.gameWeather(g)))}</span></div>
     <div class="stack">
       <div class="card"><h3>Team matchup</h3>
         <p class="muted" style="margin:0 0 8px">Values per game with league rank. Offense rank 1 = most productive; defense rank 1 = stingiest. Edge = defense rank − offense rank (positive = offense advantage). ${sampleNote()}</p>
         ${matchupTable('team', sideEdges(a, h), sideEdges(h, a), a, h)}
       </div>
+      <div class="card"><h3>Projections</h3>${projTable('game-proj', projRows().filter((r) => r.p.team === a || r.p.team === h))}</div>
       <div class="card"><h3>Player edges</h3>${playersTable('game-players', players)}</div>
       <div class="grid two">${posBlocks}</div>
     </div>`;
@@ -351,6 +377,102 @@ function viewPlayers() {
       <span class="muted">${sampleNote()}</span>
     </div>
     <div class="card">${playersTable('players', rows)}</div>`;
+}
+
+// ------------------------------------------------------ projections ----
+function projRows() {
+  const games = new Map();
+  for (const g of weekGames()) { games.set(g.away, g); games.set(g.home, g); }
+  return model.players
+    .filter((p) => games.has(p.team) && p.relevant)
+    .map((p) => ({ p, r: projector.project(p, games.get(p.team)) }));
+}
+
+const deltaColor = (d) => edgeColor(d * 100, 25);
+const pctTxt = (d) => (Math.round(d * 100) === 0 ? '±0%' : `${d > 0 ? '+' : '−'}${Math.abs(d * 100).toFixed(0)}%`);
+
+function projTable(id, rows) {
+  const P = sport.projection;
+  const sorters = {
+    name: (x) => x.p.name,
+    pos: (x) => x.p.pos,
+    proj: (x) => x.r.projFpts,
+    base: (x) => x.r.baseFpts,
+    delta: (x) => x.r.delta,
+  };
+  const s = state.sort[id] ?? { col: 'delta', asc: false };
+  rows = [...rows].sort((a, b) => {
+    const x = sorters[s.col](a), y = sorters[s.col](b);
+    const r = typeof x === 'string' ? x.localeCompare(y) : x - y;
+    return s.asc ? r : -r;
+  });
+  const th = (col, label, cls = '', title = '') =>
+    `<th class="${cls} ${col ? 'sortable' : ''} ${s.col === col ? 'sorted' : ''} ${s.col === col && s.asc ? 'asc' : ''}" ${col ? `data-sort="${id}:${col}"` : ''} ${title ? `title="${esc(title)}"` : ''}>${label}</th>`;
+  const fmtStat = (k, v) => (k.endsWith('_td') || k === 'int' ? v.toFixed(2) : v.toFixed(1));
+
+  const body = rows.map(({ p, r }) => {
+    const key = `${id}:${p.id}`;
+    const line = r.keys
+      .filter((k) => r.base[k] > 0.05)
+      .map((k) => {
+        const d = r.base[k] ? r.proj[k] / r.base[k] - 1 : 0;
+        const good = k === 'int' ? -d : d;
+        return `<span class="chip" style="background:${deltaColor(good)}" title="${esc(P.labels[k])}: ${fmtStat(k, r.proj[k])} projected vs ${fmtStat(k, r.base[k])} avg">${fmtStat(k, r.proj[k])} ${esc(P.labels[k])}</span>`;
+      })
+      .join('');
+    const why = r.factors
+      .filter((f) => Math.abs(f.impact) >= 0.01)
+      .slice(0, 3)
+      .map((f) => `<span class="chip" style="background:${edgeColor(f.impact * 100, 12)}">${esc(f.text)} <strong>${pctTxt(f.impact)}</strong></span>`)
+      .join('') || '<span class="muted">No strong factors — projection ≈ average.</span>';
+    let html = `<tr class="clickable" data-expand="${key}">
+      <td class="l"><span class="player">${p.img ? `<img loading="lazy" src="${esc(p.img)}" alt="" onerror="this.remove()">` : ''}<span>${esc(p.name)}</span></span></td>
+      <td class="c"><span class="pos">${p.pos}</span></td>
+      <td class="l">${p.team} <span class="vs">${r.isHome ? 'vs' : '@'}</span> ${r.opp}</td>
+      <td style="background:${deltaColor(r.delta)}"><strong>${r.projFpts.toFixed(1)}</strong></td>
+      <td>${r.baseFpts.toFixed(1)}</td>
+      <td style="background:${deltaColor(r.delta)}"><strong>${pctTxt(r.delta)}</strong></td>
+      <td class="l"><div class="chips">${line}</div></td>
+      <td class="l"><div class="chips">${why}</div></td>
+    </tr>`;
+    if (state.expanded === key) {
+      const all = r.factors
+        .map((f) => `<tr><td class="l">${esc(f.label)}</td><td class="l">${esc(f.text)}</td><td><span class="edge" style="background:${edgeColor(f.impact * 100, 12)}">${pctTxt(f.impact)}</span></td></tr>`)
+        .join('');
+      const stats = r.keys
+        .map((k) => `<tr><td class="l">${esc(P.labels[k])}</td><td>${fmtStat(k, r.base[k])}</td><td><strong>${fmtStat(k, r.proj[k])}</strong></td></tr>`)
+        .join('');
+      html += `<tr class="detail"><td colspan="8"><div class="grid two">
+        <div><h3>All factors (impact on fantasy pts)</h3><table>${all}</table></div>
+        <div><h3>Stat line: average → projection</h3><table><tr><th class="l">Stat</th><th>Avg</th><th>Proj</th></tr>${stats}</table>
+        <p class="muted">${esc(weatherLabel(r.weather))} · ${p.n} games in sample</p></div>
+      </div></td></tr>`;
+    }
+    return html;
+  }).join('');
+
+  return `<div class="tbl-wrap"><table><thead><tr>
+      ${th('name', 'Player', 'l')}${th('pos', 'Pos', 'c')}${th('', 'Game', 'l')}
+      ${th('proj', 'Proj FPTS', '', 'Projected PPR fantasy points')}
+      ${th('base', 'Avg', '', 'Average over the selected sample')}
+      ${th('delta', 'vs Avg', '', 'Projection vs the player’s own average — green = better spot than usual')}
+      ${th('', 'Projected line', 'l', 'Each stat colored by projection vs average')}
+      ${th('', 'Why', 'l', 'Biggest factors behind the projection. Click a row for all of them.')}
+    </tr></thead><tbody>${body || '<tr><td colspan="8" class="l muted">Nothing to show.</td></tr>'}</tbody></table></div>`;
+}
+
+function viewProjections() {
+  let rows = projRows();
+  if (state.pos !== 'ALL') rows = rows.filter((x) => x.p.pos === state.pos);
+  const q = state.search.trim().toLowerCase();
+  if (q) rows = rows.filter((x) => x.p.name.toLowerCase().includes(q) || x.p.team.toLowerCase() === q);
+  return `<div class="toolbar">
+      ${seg('pos', [['ALL', 'All'], ...Object.keys(sport.positions).map((p) => [p, p])])}
+      <input id="search" type="search" placeholder="Player or team…" value="${esc(state.search)}">
+      <span class="spacer"></span>
+      <span class="muted">Average × opponent, Vegas total, game script, weather, divisional, rest, history vs opponent, recent form. Click a row for the full breakdown. ${sampleNote()}</span>
+    </div>
+    <div class="card">${projTable('proj', rows)}</div>`;
 }
 
 function viewDvp() {
