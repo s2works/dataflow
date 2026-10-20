@@ -75,7 +75,20 @@ main { padding: 16px; max-width: 1400px; margin: 0 auto; }
 .game { cursor: pointer; transition: border-color .15s; }
 .game:hover { border-color: var(--accent); }
 .game .teams { display: flex; justify-content: space-between; font-weight: 600; font-size: 15px; }
-.game .when { font-size: 12px; color: var(--muted); margin: 2px 0 8px; }
+.game .when { font-size: 12px; color: var(--muted); margin: 2px 0 4px; }
+.winbar { display: flex; height: 18px; border-radius: 4px; overflow: hidden; margin: 6px 0 6px; font-size: 11px; font-weight: 600; gap: 2px; }
+.winbar span { display: flex; align-items: center; padding: 0 6px; white-space: nowrap; min-width: 34px; }
+.wb-away { background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 4px 0 0 4px; }
+.wb-home { background: var(--accent); color: #fff; justify-content: flex-end; border-radius: 0 4px 4px 0; }
+table.preview { margin: 6px 0; font-size: 12.5px; }
+table.preview th, table.preview td { padding: 3px 6px; position: static; }
+.preview-players { display: grid; gap: 4px; margin: 6px 0; }
+.pp-team { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; }
+.pp-label { font-weight: 700; min-width: 32px; }
+.pp { white-space: nowrap; }
+.pp strong { padding: 0 4px; border-radius: 3px; }
+.preview-ftd { margin: 4px 0 8px; }
+.ink { color: var(--ink); }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .chip { font-size: 11.5px; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line); white-space: nowrap; }
 
@@ -114,7 +127,6 @@ td .chips { min-width: 240px; }
 .linechart .pt:hover circle:last-of-type { r: 5; }
 .grid.two.charts { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-top: 10px; }
 .chip.ctx { color: var(--muted); }
-.model-line { color: var(--ink); }
 .back { cursor: pointer; color: var(--accent); background: none; border: 0; font: inherit; padding: 0; margin-bottom: 10px; }
 .matchup-head { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: baseline; margin-bottom: 12px; }
 .matchup-head h2 { margin: 0; font-size: 20px; }

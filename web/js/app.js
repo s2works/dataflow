@@ -332,6 +332,14 @@ const sampleNote = () =>
 // ------------------------------------------------------------ views ----
 function viewWeek() {
   const games = weekGames();
+  // Project everyone once for the whole week, then slice per game.
+  const proj = projRows();
+  const byTeam = new Map();
+  for (const x of proj) {
+    if (!byTeam.has(x.p.team)) byTeam.set(x.p.team, []);
+    byTeam.get(x.p.team).push(x);
+  }
+  const ft = buildFirstTd(sport, model, projector, { history });
   const cards = games.map((g) => {
     const all = [
       ...sideEdges(g.away, g.home).map((r) => ({ ...r, team: g.away })),
@@ -340,30 +348,66 @@ function viewWeek() {
       ...posEdges(g.home, g.away).filter((r) => r.label.includes('Fantasy')).map((r) => ({ ...r, team: g.home })),
     ].filter((r) => r.edge != null && r.edge >= 10);
     all.sort((a, b) => b.edge - a.edge);
-    const chips = all.slice(0, 6).map((r) => {
+    const chips = all.slice(0, 4).map((r) => {
       const label = r.group === 'Team' ? r.label.replace(' / G', '') : `${r.group} fantasy`;
       return `<span class="chip" style="background:${edgeColor(r.edge, (model.N - 1) * 0.85)}" title="${esc(r.team)} offense ${ordinal(r.o.rank)} vs defense ${ordinal(r.d.rank)}">${r.team} ${esc(label)} ${ordinal(r.o.rank)} v ${ordinal(r.d.rank)}</span>`;
     });
+    const firstFav = ft.forGame(g).players.sort((a, b) => b.gameFirst - a.gameFirst)[0];
     return `<div class="card game" data-game="${g.game_id}">
       <div class="teams"><span>${g.away}</span><span class="vs">@</span><span>${g.home}</span></div>
+      ${winBar(g)}
       <div class="when">${esc(gameLine(g))}</div>
       <div class="when">${esc(weatherLabel(projector.gameWeather(g)))}</div>
-      <div class="when model-line" title="Our model, from opponent-adjusted points and EPA ratings. Vegas is more accurate on average; see the game page for the record.">${modelLine(g)}</div>
-      <div class="chips">${chips.join('') || '<span class="muted">No large edges.</span>'}</div>
+      ${previewTable(g)}
+      <div class="preview-players">
+        ${[g.away, g.home].map((t) => topPlayers(t, byTeam.get(t) ?? [])).join('')}
+      </div>
+      ${firstFav ? `<div class="small muted preview-ftd">First TD favorite: <strong class="ink">${esc(firstFav.p.name)}</strong> ${(firstFav.gameFirst * 100).toFixed(1)}% <span class="rk">${fairOdds(firstFav.gameFirst)}</span></div>` : ''}
+      <div class="chips">${chips.join('') || '<span class="muted small">No large matchup edges.</span>'}</div>
     </div>`;
   });
-  return `<div class="toolbar"><strong>Biggest offensive edges by game</strong><span class="muted">— offense rank vs opponent defense rank; edge ≥ 10 spots. ${sampleNote()}</span></div>
+  return `<div class="toolbar"><strong>Week preview</strong><span class="muted">— model vs Vegas, top projected players and biggest matchup edges (offense rank vs defense rank, 10+ spots). Click a game for everything. ${sampleNote()}</span></div>
     <div class="grid games">${cards.join('')}</div>`;
 }
 
+// Win-probability bar: model, with the market's number in the tooltip.
+function winBar(g) {
+  const p = gameModel.predict(g);
+  const mkt = g.home_moneyline != null && g.away_moneyline != null ? fairOver(g.home_moneyline, g.away_moneyline) : null;
+  const tip = `Model: ${g.away} ${pctFmt(1 - p.pHome)} / ${g.home} ${pctFmt(p.pHome)}${mkt != null ? ` · Vegas: ${g.away} ${pctFmt(1 - mkt)} / ${g.home} ${pctFmt(mkt)}` : ''}`;
+  return `<div class="winbar" title="${esc(tip)}">
+    <span class="wb-away" style="width:${((1 - p.pHome) * 100).toFixed(1)}%">${pctFmt(1 - p.pHome)}</span>
+    <span class="wb-home" style="width:${(p.pHome * 100).toFixed(1)}%">${pctFmt(p.pHome)}</span>
+  </div>`;
+}
+
+function previewTable(g) {
+  const p = gameModel.predict(g);
+  const hasLine = g.spread_line != null && g.total_line != null;
+  const sDiff = hasLine ? p.margin - g.spread_line : null;
+  const tDiff = hasLine ? p.total - g.total_line : null;
+  const lean = (d, a, b) => (d == null || Math.abs(d) < 1.5 ? '' : `<span class="rk">${d > 0 ? a : b} ${Math.abs(d).toFixed(1)}</span>`);
+  const vh = hasLine ? (g.total_line + g.spread_line) / 2 : null, va = hasLine ? (g.total_line - g.spread_line) / 2 : null;
+  const final = g.home_score != null ? `<tr><td class="l">Final</td><td colspan="2">${g.away_score} – ${g.home_score}</td></tr>` : '';
+  return `<table class="preview" title="Model vs Vegas. Grey = which side the model leans and by how much. The model has been ~50% against the spread vs closing lines: a second opinion, not an edge.">
+    <tr><th class="l"></th><th>Model</th><th>Vegas</th></tr>
+    <tr><td class="l">Score</td><td>${p.ptsAway.toFixed(0)} – ${p.ptsHome.toFixed(0)}</td><td>${hasLine ? `${va.toFixed(0)} – ${vh.toFixed(0)}` : '–'}</td></tr>
+    <tr><td class="l">Spread</td><td>${fmtSpread(g, p.margin)}</td><td>${hasLine ? spreadText(g, g.spread_line) : '–'} ${lean(sDiff, g.home, g.away)}</td></tr>
+    <tr><td class="l">Total</td><td>${p.total.toFixed(1)}</td><td>${g.total_line ?? '–'} ${lean(tDiff, 'o', 'u')}</td></tr>
+    ${final}
+  </table>`;
+}
+
+function topPlayers(team, rows) {
+  const top = [...rows].sort((a, b) => b.r.projFpts - a.r.projFpts).slice(0, 3);
+  if (!top.length) return '';
+  return `<div class="pp-team"><span class="pp-label">${team}</span>${top.map((x) => `<span class="pp" title="${esc(`${x.p.name}: ${x.r.projFpts.toFixed(1)} PPR projected (${pctTxt(x.r.delta)} vs his average) · ${pctFmt(x.r.td.anytime)} anytime TD`)}"><span class="pos">${x.p.pos}</span> ${esc(shortName(x.p.name))}${injuryBadge(x.p.id)} <strong style="background:${deltaColor(x.r.delta)}">${x.r.projFpts.toFixed(1)}</strong> <span class="rk">TD ${pctFmt(x.r.td.anytime)}</span></span>`).join('')}</div>`;
+}
+
+const shortName = (n) => { const parts = n.split(' '); return parts.length > 1 ? `${parts[0][0]}. ${parts.slice(1).join(' ')}` : n; };
+
 // ------------------------------------------------------ game model ----
 const fmtSpread = (g, margin) => (Math.abs(margin) < 0.25 ? 'PK' : `${margin > 0 ? g.home : g.away} -${Math.abs(margin).toFixed(1)}`);
-
-function modelLine(g) {
-  const p = gameModel.predict(g);
-  const fav = p.pHome >= 0.5 ? g.home : g.away;
-  return `Model: ${fmtSpread(g, p.margin)} · total ${p.total.toFixed(1)} · ${fav} ${pctFmt(Math.max(p.pHome, 1 - p.pHome))}`;
-}
 
 // Record when the model disagrees with Vegas by at least `diff` points.
 function recordAt(kind, diff) {
