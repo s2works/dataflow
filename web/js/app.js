@@ -3,6 +3,7 @@ import { buildModel, edgeColor, rankColor, ordinal } from './engine.js';
 import { buildProjector, fetchForecasts, weatherLabel } from './projections.js';
 import { overProb, fairOver, impliedProb, poissonAtLeast, medianOutcome } from './props.js';
 import { ANGLES, anglesFor, boomBust, angleEffect } from './boombust.js';
+import { buildFirstTd } from './firsttd.js';
 
 const ANGLE_LABELS = Object.fromEntries(ANGLES.map((a) => [a.id, a.label]));
 
@@ -389,6 +390,7 @@ function viewGame() {
         <div class="card"><h3>Injury report</h3>${injuryCard(a, h)}</div>
       </div>
       ${hasProps(g) ? `<div class="card"><h3>Props vs projection</h3>${propsTable('game-props', propRows(projRows().filter((r) => r.p.team === a || r.p.team === h)))}</div>` : ''}
+      <div class="card"><h3>First touchdown</h3>${firstTdTable('game-ftd', firstTdRows([g]), 10)}</div>
       <div class="card"><h3>Touchdown chances</h3>${tdTable('game-td', projRows().filter((r) => r.p.team === a || r.p.team === h), 10)}</div>
       <div class="card"><h3>Projections</h3>${projTable('game-proj', projRows().filter((r) => r.p.team === a || r.p.team === h))}</div>
       <div class="card"><h3>Player edges</h3>${playersTable('game-players', players)}</div>
@@ -808,10 +810,11 @@ function viewTouchdowns() {
   let rows = projRows();
   const q = state.search.trim().toLowerCase();
   if (q) rows = rows.filter((x) => x.p.name.toLowerCase().includes(q) || x.p.team.toLowerCase() === q);
+  if (state.tdView === 'first') return viewFirstTd(q);
   const any = state.tdView === 'any';
   if (any && state.pos !== 'ALL') rows = rows.filter((x) => x.p.pos === state.pos);
   return `<div class="toolbar">
-      ${seg('tdView', [['any', 'Anytime TD'], ['qb', 'QB passing TDs']])}
+      ${seg('tdView', [['any', 'Anytime TD'], ['first', 'First TD'], ['qb', 'QB passing TDs']])}
       ${any ? seg('pos', [['ALL', 'All'], ...Object.keys(sport.positions).map((p) => [p, p])]) : ''}
       <input id="search" type="search" placeholder="Player or team…" value="${esc(state.search)}">
       <span class="spacer"></span>
@@ -900,6 +903,61 @@ function viewBoomBust() {
         <p class="muted small">Angles that showed no real effect in backtests (e.g. low game totals, tough defenses, workhorse backs as favorites) are tracked but not shown.</p>
       </div>
     </div>`;
+}
+
+// ------------------------------------------------------------ first TD ----
+function firstTdRows(games) {
+  const ft = buildFirstTd(sport, model, projector, { history });
+  return games.flatMap((g) => {
+    const res = ft.forGame(g);
+    return res.players.map((x) => ({ ...x, g, teamInfo: res.teams[x.team], oppTeam: res.teams[x.team === g.home ? g.away : g.home] }));
+  });
+}
+
+function firstTdTable(id, rows, limit = 0) {
+  if (limit) rows = [...rows].sort((a, b) => b.gameFirst - a.gameFirst).slice(0, limit);
+  const ctx = (f, label) => (f?.text ? `<span class="chip ctx" title="Shown for context: not weighted in (no backtested edge)">${esc(label)}: ${esc(f.text)}</span>` : '');
+  const cols = [
+    { id: 'name', label: 'Player', cls: 'l', sort: (x) => x.p.name, cell: (x) => `${esc(x.p.name)}${injuryBadge(x.p.id)}` },
+    { id: 'pos', label: 'Pos', cls: 'c', sort: (x) => x.p.pos, cell: (x) => `<span class="pos">${x.p.pos}</span>` },
+    {
+      id: 'game', label: 'Game', cls: 'l', title: 'Chance this team scores the game’s first TD',
+      cell: (x) => `${x.p.team} <span class="vs">${x.r.isHome ? 'vs' : '@'}</span> ${x.r.opp} <span class="rk">${pctFmt(x.teamInfo.pFirst)} team first</span>`,
+    },
+    {
+      id: 'gf', label: 'First TD', title: 'Chance he scores the first TD of the game',
+      sort: (x) => x.gameFirst, bg: (x) => edgeColor((x.gameFirst - 0.045) * 100, 8),
+      cell: (x) => `<strong>${(x.gameFirst * 100).toFixed(1)}%</strong> <span class="rk">${fairOdds(x.gameFirst)}</span>`,
+    },
+    {
+      id: 'tf', label: 'Team 1st TD', title: 'Chance he scores his team’s first TD',
+      sort: (x) => x.teamFirst, cell: (x) => `${(x.teamFirst * 100).toFixed(1)}% <span class="rk">${fairOdds(x.teamFirst)}</span>`,
+    },
+    { id: 'any', label: 'Anytime', sort: (x) => x.r.td.anytime, cell: (x) => pctFmt(x.r.td.anytime) },
+    { id: 'share', label: 'Team TD share', title: 'His share of the team’s expected TDs (after flattening)', sort: (x) => x.share, cell: (x) => pctFmt(x.share) },
+    { id: 'rz', label: 'RZ looks/G', sort: (x) => x.r.td.rzLooks, cell: (x) => x.r.td.rzLooks.toFixed(1) },
+    {
+      id: 'ctx', label: 'Context (not weighted)', cls: 'l wrap',
+      title: 'Early-game role, his first-TD history and what this defense allows. Backtests found none of these predict first TDs beyond the TD share, so they are informational.',
+      cell: (x) => `<div class="chips">${ctx(x.f.early, 'Early role')}${ctx(x.f.hist, 'History')}${ctx(x.f.def, 'Defense')}</div>`,
+    },
+  ];
+  return table(id, cols, rows, { col: 'gf', asc: false });
+}
+
+function viewFirstTd(q) {
+  let rows = firstTdRows(weekGames());
+  if (state.pos !== 'ALL') rows = rows.filter((x) => x.p.pos === state.pos);
+  if (q) rows = rows.filter((x) => x.p.name.toLowerCase().includes(q) || x.p.team.toLowerCase() === q);
+  rows = rows.filter((x) => x.gameFirst >= 0.005);
+  return `<div class="toolbar">
+      ${seg('tdView', [['any', 'Anytime TD'], ['first', 'First TD'], ['qb', 'QB passing TDs']])}
+      ${seg('pos', [['ALL', 'All'], ...Object.keys(sport.positions).map((p) => [p, p])])}
+      <input id="search" type="search" placeholder="Player or team…" value="${esc(state.search)}">
+      <span class="spacer"></span>
+      <span class="muted">Each player's share of his team's expected TDs (red-zone usage, Vegas, opponent, weather, injuries…) × the chance his team scores first. Backtested: predicted rates match actual within ~1–3 pts; early role, first-TD history and defense tendencies added nothing, so they're shown as context only. A typical starter is ~4–5%. ${sampleNote()}</span>
+    </div>
+    <div class="card">${firstTdTable('ftd', rows)}</div>`;
 }
 
 function viewDvp() {

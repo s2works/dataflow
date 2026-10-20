@@ -145,6 +145,10 @@ export default {
     td: { xWeight: 1, trendGames: 3, trendWeight: 0.15, trendCap: 0.25, calib: { floor: 0.1, scale: 0.7 },
       // QB pass TDs shrink toward a league-typical starter (backtest-fitted).
       passCalib: { mean: 1.5, scale: 0.3 } },
+    // First TD: share flattening (λ^power), which first-TD factors to weight
+    // in (none helped in backtests, so none), their regression pseudo-counts,
+    // and a rate for defensive/special-teams TDs.
+    firstTd: { power: 0.7, apply: [], kEarly: 15, kHistory: 8, kDefense: 25, dstRate: 0.1, scale: 1 },
     totalClamp: [0.6, 1.6],
   },
 
@@ -199,5 +203,5 @@ export default {
   // nflverse schedule times are US Eastern.
   scheduleTimezone: 'America/New_York',
 
-  rawColumns: ['cmp', 'pass_att', 'pass_yds', 'pass_td', 'int', 'rush_att', 'rush_yds', 'rush_td', 'tgt', 'rec', 'rec_yds', 'rec_td', 'fpts', 'car_gl', 'car_rz', 'tgt_rz'],
+  rawColumns: ['cmp', 'pass_att', 'pass_yds', 'pass_td', 'int', 'rush_att', 'rush_yds', 'rush_td', 'tgt', 'rec', 'rec_yds', 'rec_td', 'fpts', 'car_gl', 'car_rz', 'tgt_rz', 'q1_car', 'q1_tgt', 'ftd_game', 'ftd_team'],
 };

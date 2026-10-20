@@ -89,6 +89,21 @@ tiebreaker and context, not a lock. All weights live in
 
 Log loss 0.549 vs 0.698 for "TDs scored so far" (lower is better).
 
+**First TD** (Touchdowns → First TD, and a card on each game page): chance a
+player scores the **game's** first TD and his **team's** first TD, with fair
+odds. Each player's share of his team's expected TDs (everything above:
+red-zone usage, Vegas, opponent, weather, injuries; flattened as λ^0.7 since
+raw rates over-favor stars) × the chance his team scores first, from both
+teams' expected TDs. Backtest (2025 + 2026): predicted rates match actual
+within ~1–3 pts per bucket and beat "same odds for everyone" clearly.
+
+Also computed and shown, but **not weighted in**: early-game role (share of
+1st-quarter touches), his history of scoring his team's first TD, and which
+positions the defense gives up first TDs to. Each was tested at several
+strengths and made predictions worse or no better, so they're context only
+(switch one on via `firstTd.apply` in `web/js/sports/nfl.js` and re-run
+`node tools/backtest.mjs` to re-test as more data comes in).
+
 **QB passing TDs**: projected passing TDs with 2+ / 3+ probabilities and
 fair odds. Honest caveat: this barely beats a coin flip in backtests, so
 projections are shrunk hard toward a league-typical 1.5.
@@ -216,6 +231,7 @@ web/js/engine.js          ranks, edges, player matchup math
 web/js/projections.js     player projection + touchdown model, weather forecasts
 web/js/props.js           prop odds math, P(over a line)
 web/js/boombust.js        boom/bust angles and probabilities
+web/js/firsttd.js         first-TD probabilities
 web/js/sports/nfl.js      NFL stats, positions, projection weights, stadiums
 tools/backtest.mjs        projection accuracy check
 tools/fit_prop_dist.mjs   prop outcome distributions (refit by the refresh job)

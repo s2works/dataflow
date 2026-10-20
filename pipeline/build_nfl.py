@@ -41,6 +41,7 @@ PBP_URL = RELEASES + "/pbp/play_by_play_{season}.csv.gz"
 PBP_COLS = [
     "game_id", "season_type", "yardline_100", "rush_attempt", "pass_attempt", "two_point_attempt",
     "rusher_player_id", "receiver_player_id", "rush_touchdown", "pass_touchdown",
+    "play_id", "qtr", "touchdown", "td_team", "td_player_id",
 ]
 
 # Player props from The Odds API (https://the-odds-api.com). Optional: only runs
@@ -115,7 +116,7 @@ POS_COLS = {
     "fantasy_points_ppr": "fpts",
 }
 
-RZ_COLS = ["car_gl", "car_rz", "tgt_rz"]
+RZ_COLS = ["car_gl", "car_rz", "tgt_rz", "q1_car", "q1_tgt", "ftd_game", "ftd_team"]
 PLAYER_COLS = POS_COLS  # plus RZ_COLS when play-by-play is available
 
 
@@ -377,6 +378,9 @@ def build_red_zone(season: int) -> tuple[pd.DataFrame | None, dict | None]:
 
     car_gl  carries inside the 5      car_rz  carries at the 6-20
     tgt_rz  targets inside the 20
+    q1_car, q1_tgt   first-quarter carries / targets (scripted, early-game role)
+    ftd_game         scored the game's first TD
+    ftd_team         scored his team's first TD
     td_rates: P(TD | opportunity) by zone, used to turn usage into expected TDs.
     """
     try:
@@ -412,7 +416,18 @@ def build_red_zone(season: int) -> tuple[pd.DataFrame | None, dict | None]:
         .groupby(["game_id", "receiver_player_id"]).size().rename("tgt_rz")
         .rename_axis(index=["game_id", "player_id"])
     )
-    rz = car.join(tgt, how="outer").fillna(0).astype(int).reset_index()
+    q1 = pd.concat([
+        runs[runs["qtr"] == 1].groupby(["game_id", "rusher_player_id"]).size().rename("q1_car").rename_axis(index=["game_id", "player_id"]),
+        tgts[tgts["qtr"] == 1].groupby(["game_id", "receiver_player_id"]).size().rename("q1_tgt").rename_axis(index=["game_id", "player_id"]),
+    ], axis=1)
+
+    tds = pbp[(pbp["touchdown"] == 1) & pbp["td_player_id"].notna()].sort_values(["game_id", "play_id"])
+    first_game = tds.groupby("game_id").head(1).set_index(["game_id", "td_player_id"]).assign(ftd_game=1)["ftd_game"]
+    first_team = tds.groupby(["game_id", "td_team"]).head(1).set_index(["game_id", "td_player_id"]).assign(ftd_team=1)["ftd_team"]
+    first = pd.concat([first_game.groupby(level=[0, 1]).max(), first_team.groupby(level=[0, 1]).max()], axis=1)
+    first.index.names = ["game_id", "player_id"]
+
+    rz = car.join(tgt, how="outer").join(q1, how="outer").join(first, how="outer").fillna(0).astype(int).reset_index()
     return rz, td_rates
 
 

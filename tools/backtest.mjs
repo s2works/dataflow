@@ -142,3 +142,57 @@ for (const [lo, hi] of [[0, 0.1], [0.1, 0.2], [0.2, 0.3], [0.3, 0.45], [0.45, 1]
     console.log(`  ${(lo * 100).toFixed(0).padStart(2)}–${(hi * 100).toFixed(0)}%   n=${String(xs.length).padEnd(4)} predicted ${m((x) => x.p).toFixed(1)}%  actual ${m((x) => x.y).toFixed(1)}%`);
   }
 }
+
+// ---- First touchdown -----------------------------------------------------------
+// Every active player in each game (not just key roles), scored against who
+// actually got the game's first TD / his team's first TD.
+{
+  const { buildFirstTd } = await load('js/firsttd.js');
+  const ftd = (disabled) => {
+    const res = { game: [], team: [] };
+    for (const wk of weeks) {
+      const pr = buildProjector(sport, wk.model, { history: wk.history });
+      const ft = buildFirstTd(sport, wk.model, pr, { history: wk.history, disabled: new Set(disabled) });
+      const games = new Map(wk.items.map((it) => [it.g.game_id, it.g]));
+      const rows = new Map(wk.model.data.player_games.filter((r) => r.week === wk.model.beforeWeek).map((r) => [`${r.id}|${r.game_id}`, r]));
+      for (const g of games.values()) {
+        for (const x of ft.forGame(g).players) {
+          const a = rows.get(`${x.p.id}|${g.game_id}`);
+          if (!a) continue; // didn't play
+          res.game.push({ p: x.gameFirst, y: a.ftd_game ? 1 : 0, naive: x.lam });
+          res.team.push({ p: x.teamFirst, y: a.ftd_team ? 1 : 0 });
+        }
+      }
+    }
+    return res;
+  };
+  const ll = (xs) => xs.reduce((s, o) => { const p = Math.min(0.9, Math.max(0.002, o.p)); return s - (o.y ? Math.log(p) : Math.log(1 - p)); }, 0) / xs.length;
+  // Factors are only weighted in when listed in firstTd.apply; test each one on.
+  const FT = cfg.firstTd;
+  const full = ftd([]);
+  const uniform = full.game.map((o) => ({ ...o, p: 0.95 / 22 }));
+  console.log('\nFirst TD                          log loss (game first)   (team first)');
+  console.log(`  same odds for everyone          ${ll(uniform).toFixed(4)}`);
+  console.log(`  model (config)                  ${ll(full.game).toFixed(4)}               ${ll(full.team).toFixed(4)}`);
+  const applied = FT.apply;
+  for (const f of ['early', 'hist', 'def']) {
+    FT.apply = applied.includes(f) ? applied.filter((x) => x !== f) : [...applied, f];
+    const r = ftd([]);
+    console.log(`  ${applied.includes(f) ? 'without' : 'with   '} ${f.padEnd(23)} ${ll(r.game).toFixed(4)}               ${ll(r.team).toFixed(4)}`);
+  }
+  FT.apply = applied;
+  console.log('First TD of the game: predicted vs actual');
+  for (const [lo, hi] of [[0, 0.02], [0.02, 0.05], [0.05, 0.08], [0.08, 0.12], [0.12, 1]]) {
+    const xs = full.game.filter((o) => o.p >= lo && o.p < hi);
+    if (xs.length < 20) continue;
+    const m = (f) => (100 * xs.reduce((s, o) => s + f(o), 0)) / xs.length;
+    console.log(`  ${(lo * 100).toFixed(0).padStart(2)}–${(hi * 100).toFixed(0)}%  n=${String(xs.length).padEnd(5)} predicted ${m((o) => o.p).toFixed(1)}%  actual ${m((o) => o.y).toFixed(1)}%`);
+  }
+  console.log('Team first TD: predicted vs actual');
+  for (const [lo, hi] of [[0, 0.05], [0.05, 0.1], [0.1, 0.2], [0.2, 0.3], [0.3, 1]]) {
+    const xs = full.team.filter((o) => o.p >= lo && o.p < hi);
+    if (xs.length < 20) continue;
+    const m = (f) => (100 * xs.reduce((s, o) => s + f(o), 0)) / xs.length;
+    console.log(`  ${(lo * 100).toFixed(0).padStart(2)}–${(hi * 100).toFixed(0)}%  n=${String(xs.length).padEnd(5)} predicted ${m((o) => o.p).toFixed(1)}%  actual ${m((o) => o.y).toFixed(1)}%`);
+  }
+}
