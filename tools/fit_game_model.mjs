@@ -74,15 +74,34 @@ const winLL = {
   n: ml.length,
 };
 
+// How often the favorite lost (model favorite / Vegas moneyline favorite), and
+// the underdog's actual win rate by its pre-game chance: the "upset" picture.
+const favLost = (key) => {
+  const xs = decided.map((r) => ({ p: key === 'model' ? normCdf(r.p.margin / best.sd) : (r.g.home_moneyline != null ? fairOver(r.g.home_moneyline, r.g.away_moneyline) : null), y: r.margin > 0 }))
+    .filter((x) => x.p != null && x.p !== 0.5);
+  const lost = xs.filter((x) => (x.p > 0.5) !== x.y).length;
+  return { lost, n: xs.length, rate: +(lost / xs.length).toFixed(3) };
+};
+const upsets = { model: favLost('model'), vegas: favLost('vegas') };
+const dogBuckets = [[0, 0.25], [0.25, 0.35], [0.35, 0.45], [0.45, 0.5]].map(([lo, hi]) => {
+  const xs = decided.filter((r) => r.g.home_moneyline != null).map((r) => {
+    const ph = fairOver(r.g.home_moneyline, r.g.away_moneyline);
+    return { dog: Math.min(ph, 1 - ph), won: (ph < 0.5) === (r.margin > 0) };
+  }).filter((x) => x.dog >= lo && x.dog < hi);
+  return { lo, hi, n: xs.length, predicted: +(xs.reduce((s, x) => s + x.dog, 0) / (xs.length || 1)).toFixed(3), won: +(xs.filter((x) => x.won).length / (xs.length || 1)).toFixed(3) };
+});
+
 const pct = ([w, l]) => (w + l ? `${w}-${l} (${((100 * w) / (w + l)).toFixed(1)}%)` : '–');
 console.log(`${rows.length} games (seasons ${seasons.join(', ')}, week 3+)`);
 console.log(`Margin error: model ${err.margin.model.toFixed(2)} vs Vegas ${err.margin.vegas.toFixed(2)}`);
 console.log(`Total error:  model ${err.total.model.toFixed(2)} vs Vegas ${err.total.vegas.toFixed(2)}`);
 for (const t of thresholds) console.log(`  disagree by ${t}+: ATS ${pct(ats[t])}   O/U ${pct(ou[t])}`);
+console.log(`Favorite lost: model ${(upsets.model.rate * 100).toFixed(1)}%, Vegas ${(upsets.vegas.rate * 100).toFixed(1)}% of games`);
+for (const b of dogBuckets) console.log(`  underdogs at ${b.lo * 100}–${b.hi * 100}%: n=${b.n} expected ${(b.predicted * 100).toFixed(1)}% won ${(b.won * 100).toFixed(1)}%`);
 console.log(`Win prob log loss: model ${winLL.model.toFixed(4)} vs moneyline ${winLL.market.toFixed(4)} (n=${winLL.n}); margin SD ${best.sd}`);
 
 const out = path.join(WEB, 'data', 'nfl', 'game_record.json');
-const body = { games: rows.length, err, ats, ou, winLL, marginSd: best.sd };
+const body = { games: rows.length, err, ats, ou, winLL, marginSd: best.sd, upsets, dogBuckets };
 const old = fs.existsSync(out) ? JSON.parse(fs.readFileSync(out)) : null;
 if (old && JSON.stringify({ ...old, fitted_at: undefined }) === JSON.stringify({ ...body, fitted_at: undefined })) console.log('game_record.json unchanged');
 else {

@@ -23,7 +23,7 @@ const normCdf = (x) => {
   return x > 0 ? 1 - p : p;
 };
 
-export function buildGameModel(sport, data, { beforeWeek = Infinity, history = [] } = {}) {
+export function buildGameModel(sport, data, { beforeWeek = Infinity, history = [], weatherOf = null } = {}) {
   const C = sport.projection.game;
   const games = [];
   const push = (g, w) => {
@@ -109,14 +109,51 @@ export function buildGameModel(sport, data, { beforeWeek = Infinity, history = [
     return st && outIds.has(st.id) ? names.get(st.id) ?? 'starting QB' : null;
   };
 
+  // ---- skill players out: share of the team's fantasy production ruled out --
+  const fpts = new Map(), teamFpts = new Map(), teamOf = new Map();
+  for (const r of data.player_games) {
+    if (r.week >= beforeWeek) continue;
+    fpts.set(r.id, (fpts.get(r.id) || 0) + (r.fpts || 0));
+    teamFpts.set(r.team, (teamFpts.get(r.team) || 0) + (r.fpts || 0));
+    teamOf.set(r.id, r.team);
+  }
+  const skillOut = (team) => {
+    const out = (data.injuries || []).filter((i) => i.week === beforeWeek && i.team === team && ['Out', 'Doubtful'].includes(i.status)
+      && i.pos !== 'QB' && i.pos !== 'DB' && teamOf.get(i.id) === team);
+    const share = out.reduce((s, i) => s + (fpts.get(i.id) || 0) / (teamFpts.get(team) || 1), 0);
+    return { share, names: out.filter((i) => (fpts.get(i.id) || 0) / (teamFpts.get(team) || 1) >= 0.05).map((i) => i.name) };
+  };
+
+  // ---- weather on the total (outdoors): recorded for past games, forecast ahead
+  function weatherAdj(g) {
+    const w = weatherOf ? weatherOf(g) : g.roof === 'outdoors' && g.temp != null ? { temp: g.temp, wind: g.wind ?? 0 } : null;
+    if (!w || w.indoor || w.unknown || w.unrecorded || w.error || w.temp == null) return { pts: 0 };
+    const wind = Math.max(0, (w.wind ?? 0) - C.windFrom), cold = Math.max(0, C.coldBelow - w.temp);
+    return { pts: -(C.windPerMph * wind + C.coldPerDeg * cold), wind: w.wind, temp: w.temp };
+  }
+
   function predict(g) {
     const s = g.location === 'Neutral' ? 0 : hfa / 2;
     const outHome = qbOut(g.home), outAway = qbOut(g.away);
-    const ptsHome = mu + O[g.home] + D[g.away] + s - (outHome ? C.qbDrop : 0);
-    const ptsAway = mu + O[g.away] + D[g.home] - s - (outAway ? C.qbDrop : 0);
+    const injH = skillOut(g.home), injA = skillOut(g.away);
+    const restDiff = (g.home_rest ?? 7) - (g.away_rest ?? 7);
+    const wx = weatherAdj(g);
+    // Skill injuries move the margin, not the total: half off the injured
+    // team, half onto its opponent (backtests: total error rose otherwise).
+    const inj = C.injuryPerShare * (injA.share - injH.share) / 2; // + favors home
+    const adjHome = -(outHome ? C.qbDrop : 0) + inj + (C.restPerDay * restDiff) / 2 + wx.pts / 2;
+    const adjAway = -(outAway ? C.qbDrop : 0) - inj - (C.restPerDay * restDiff) / 2 + wx.pts / 2;
+    const ptsHome = mu + O[g.home] + D[g.away] + s + adjHome;
+    const ptsAway = mu + O[g.away] + D[g.home] - s + adjAway;
     const margin = ptsHome - ptsAway; // + = home wins by
     return {
       ptsHome, ptsAway, margin, qbOutHome: outHome, qbOutAway: outAway,
+      // What moved this game off the pure ratings (for display).
+      adjustments: {
+        restDiff, rest: C.restPerDay * restDiff,
+        injHome: { ...injH, pts: -C.injuryPerShare * injH.share }, injAway: { ...injA, pts: -C.injuryPerShare * injA.share },
+        weather: wx,
+      },
       total: ptsHome + ptsAway,
       pHome: normCdf(margin / C.marginSd),
       // P(home covers the market spread) and P(over the market total), for edges.

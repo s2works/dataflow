@@ -76,6 +76,13 @@ main { padding: 16px; max-width: 1400px; margin: 0 auto; }
 .game:hover { border-color: var(--accent); }
 .game .teams { display: flex; justify-content: space-between; font-weight: 600; font-size: 15px; }
 .game .when { font-size: 12px; color: var(--muted); margin: 2px 0 4px; }
+.upset { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; margin: 0 0 4px; padding: 3px 6px; border-radius: 4px;
+  background: rgba(234, 179, 8, calc(0.06 + 0.3 * var(--u, 0))); }
+.upset.hit { background: rgba(234, 179, 8, .35); font-weight: 600; }
+.badge { font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 999px; }
+.badge.pick { background: var(--accent); color: #fff; }
+.badge.alert { background: rgba(234, 179, 8, .9); color: #3a2a00; }
+.upset-summary { margin-bottom: 12px; font-size: 13px; }
 .winbar { display: flex; height: 18px; border-radius: 4px; overflow: hidden; margin: 6px 0 6px; font-size: 11px; font-weight: 600; gap: 2px; }
 .winbar span { display: flex; align-items: center; padding: 0 6px; white-space: nowrap; min-width: 34px; }
 .wb-away { background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 4px 0 0 4px; }

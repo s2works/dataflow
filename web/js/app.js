@@ -32,6 +32,7 @@ const state = {
   sort: {},
   expanded: null,
   tdView: 'any',
+  weekSort: 'time',
   projView: 'proj',
 };
 let data = null;
@@ -144,7 +145,7 @@ async function loadSeason(season, { keepWeek = false } = {}) {
 function recompute() {
   model = buildModel(sport, data, { beforeWeek: state.week, lastN: state.lastN });
   projector = buildProjector(sport, model, { history, weather: forecasts });
-  gameModel = buildGameModel(sport, data, { beforeWeek: state.week, history });
+  gameModel = buildGameModel(sport, data, { beforeWeek: state.week, history, weatherOf: (g) => projector.gameWeather(g) });
   render();
   // Pull live forecasts for this week's outdoor games, then re-project.
   const pending = weekGames().filter((g) => !forecasts.has(g.game_id));
@@ -152,6 +153,7 @@ function recompute() {
     forecastsAt = Date.now();
     fetchForecasts(sport, pending, forecasts).then(() => {
       projector = buildProjector(sport, model, { history, weather: forecasts });
+      gameModel = buildGameModel(sport, data, { beforeWeek: state.week, history, weatherOf: (g) => projector.gameWeather(g) });
       render();
     });
   }
@@ -331,7 +333,8 @@ const sampleNote = () =>
 
 // ------------------------------------------------------------ views ----
 function viewWeek() {
-  const games = weekGames();
+  let games = weekGames();
+  if (state.weekSort === 'upset') games = [...games].sort((a, b) => upsetInfo(b).dog - upsetInfo(a).dog);
   // Project everyone once for the whole week, then slice per game.
   const proj = projRows();
   const byTeam = new Map();
@@ -356,6 +359,7 @@ function viewWeek() {
     return `<div class="card game" data-game="${g.game_id}">
       <div class="teams"><span>${g.away}</span><span class="vs">@</span><span>${g.home}</span></div>
       ${winBar(g)}
+      ${upsetLine(g)}
       <div class="when">${esc(gameLine(g))}</div>
       <div class="when">${esc(weatherLabel(projector.gameWeather(g)))}</div>
       ${previewTable(g)}
@@ -366,8 +370,61 @@ function viewWeek() {
       <div class="chips">${chips.join('') || '<span class="muted small">No large matchup edges.</span>'}</div>
     </div>`;
   });
-  return `<div class="toolbar"><strong>Week preview</strong><span class="muted">— model vs Vegas, top projected players and biggest matchup edges (offense rank vs defense rank, 10+ spots). Click a game for everything. ${sampleNote()}</span></div>
+  return `<div class="toolbar"><strong>Week preview</strong>${seg('weekSort', [['time', 'By kickoff'], ['upset', 'By upset chance']])}<span class="muted">Model vs Vegas, top projected players and biggest matchup edges. Click a game for everything. ${sampleNote()}</span></div>
+    ${upsetSummary()}
     <div class="grid games">${cards.join('')}</div>`;
+}
+
+// ---- upsets -------------------------------------------------------------
+// Underdog's chance: Vegas moneyline (no vig) when there is one, since it is the
+// better-calibrated number in backtests; the model's view is shown alongside.
+function upsetInfo(g) {
+  const p = gameModel.predict(g);
+  const mkt = g.home_moneyline != null && g.away_moneyline != null ? fairOver(g.home_moneyline, g.away_moneyline) : null;
+  const pH = mkt ?? p.pHome;
+  const dogHome = pH < 0.5;
+  const dogTeam = dogHome ? g.home : g.away;
+  const dog = dogHome ? pH : 1 - pH;
+  const modelDog = dogHome ? p.pHome : 1 - p.pHome;
+  const modelPick = mkt != null && (p.pHome > 0.5) !== (mkt > 0.5) && Math.abs(p.pHome - 0.5) > 0.01;
+  return { dogTeam, dog, modelDog, modelPick, source: mkt != null ? 'Vegas' : 'model' };
+}
+
+const isAlert = (u) => !u.modelPick && u.dog >= 0.4 && (u.source !== 'Vegas' || u.modelDog >= 0.4);
+const MODEL_PICK_NOTE = (u) => `The model makes ${u.dogTeam} the favorite (${pctFmt(u.modelDog)}) while Vegas has them at ${pctFmt(u.dog)}. A gap this size often means the market knows something the stats don't yet (a QB's status before the injury report, a lineup change), so check the news.`;
+
+function upsetLine(g) {
+  if (g.home_score != null) {
+    const u = upsetInfo(g);
+    const won = (g.home_score > g.away_score ? g.home : g.away) === u.dogTeam;
+    return `<div class="upset ${won ? 'hit' : ''}">${won ? `Upset: ${u.dogTeam} won as a ${pctFmt(u.dog)} underdog` : `Favorite won (${u.dogTeam} was ${pctFmt(u.dog)})`}</div>`;
+  }
+  const u = upsetInfo(g);
+  const badges = [
+    u.modelPick ? `<span class="badge pick" title="${esc(MODEL_PICK_NOTE(u))}">Model upset pick</span>` : '',
+    isAlert(u) ? `<span class="badge alert" title="Both Vegas and the model give the underdog 40%+: roughly 2 in 5.">Upset alert</span>` : '',
+  ].join('');
+  return `<div class="upset" style="--u:${Math.min(1, u.dog / 0.5).toFixed(2)}"><span>Upset chance: <strong>${u.dogTeam} ${pctFmt(u.dog)}</strong> <span class="rk">${u.source}${u.source === 'Vegas' ? ` · model ${pctFmt(u.modelDog)}` : ''}</span></span>${badges}</div>`;
+}
+
+function upsetSummary() {
+  const games = weekGames().filter((g) => g.home_score == null);
+  if (!games.length) {
+    const played = weekGames();
+    const hits = played.filter((g) => { const u = upsetInfo(g); return (g.home_score > g.away_score ? g.home : g.away) === u.dogTeam; });
+    return `<div class="card upset-summary"><strong>${hits.length} upset${hits.length === 1 ? '' : 's'}</strong> this week out of ${played.length} games${hits.length ? `: ${hits.map((g) => upsetInfo(g).dogTeam).join(', ')}` : ''}.</div>`;
+  }
+  const us = games.map(upsetInfo);
+  const expected = us.reduce((s, u) => s + u.dog, 0);
+  const alerts = us.filter((u) => isAlert(u) || u.modelPick).length;
+  const r = gameRecord;
+  const hist = r?.upsets ? `Favorites lost <strong>${pctFmt(r.upsets.vegas.rate)}</strong> of games in 2024–26 (${r.upsets.vegas.lost} of ${r.upsets.vegas.n}).` : '';
+  const b = r?.dogBuckets?.find((x) => x.lo === 0.35);
+  const bTxt = b ? ` Underdogs given 35–45% won ${pctFmt(b.won)} of the time, so those chances are real.` : '';
+  return `<div class="card upset-summary">
+    <strong>Upset watch:</strong> expect about <strong>${expected.toFixed(1)}</strong> upsets in ${games.length} games this week (the sum of each underdog's chance), with <strong>${alerts}</strong> game${alerts === 1 ? '' : 's'} flagged (upset alert: Vegas and the model both give the underdog 40%+; model upset pick: the model favors the Vegas underdog). ${hist}${bTxt}
+    <span class="muted small">Underdog chances use the Vegas moneyline with the vig removed (more accurate than our model in backtests); the model's number is shown next to it.</span>
+  </div>`;
 }
 
 // Win-probability bar: model, with the market's number in the tooltip.
@@ -418,6 +475,18 @@ function recordAt(kind, diff) {
   return { th, w, l, pct: w + l ? w / (w + l) : null };
 }
 
+function adjustmentRows(g, p) {
+  const a = p.adjustments;
+  if (!a) return '';
+  const rows = [];
+  for (const [team, inj] of [[g.home, a.injHome], [g.away, a.injAway]]) {
+    if (inj.share >= 0.03) rows.push(`${team} missing ${(inj.share * 100).toFixed(0)}% of its fantasy production${inj.names.length ? ` (${esc(inj.names.join(', '))})` : ''}: ${(inj.pts / 2).toFixed(1)} pts to ${team}, +${(-inj.pts / 2).toFixed(1)} to the opponent`);
+  }
+  if (a.weather?.pts) rows.push(`Weather (${Math.round(a.weather.temp)}°F, wind ${Math.round(a.weather.wind)} mph): ${a.weather.pts.toFixed(1)} on the total`);
+  if (a.rest) rows.push(`Rest edge ${a.restDiff > 0 ? g.home : g.away} (${Math.abs(a.restDiff)} days): ${Math.abs(a.rest).toFixed(1)} pts`);
+  return rows.length ? `<tr><td class="l">Adjusted for</td><td colspan="3" class="l">${rows.join('<br>')}</td></tr>` : '';
+}
+
 function gameProjectionCard(g) {
   const p = gameModel.predict(g);
   const hasLine = g.spread_line != null && g.total_line != null;
@@ -438,6 +507,8 @@ function gameProjectionCard(g) {
     <tr><td class="l">Spread</td><td>${fmtSpread(g, p.margin)}</td><td>${hasLine ? spreadText(g, g.spread_line) : '–'}</td><td class="l">${lean(sDiff, `${g.home} side`, `${g.away} side`, ats)}</td></tr>
     <tr><td class="l">Total</td><td>${p.total.toFixed(1)}</td><td>${g.total_line ?? '–'}</td><td class="l">${lean(tDiff, 'Over', 'Under', ou)}</td></tr>
     ${p.qbOutHome || p.qbOutAway ? `<tr><td class="l">QB out</td><td colspan="3" class="l">${esc(p.qbOutHome || p.qbOutAway)} (${p.qbOutHome ? g.home : g.away}) ruled out: model takes ${sport.projection.game.qbDrop} pts off that offense (teams without their starter scored ~2.8 below the model in backtests)</td></tr>` : ''}
+    ${adjustmentRows(g, p)}
+    <tr><td class="l">Upset chance</td><td colspan="3" class="l">${(() => { const u = upsetInfo(g); return `${u.dogTeam} ${pctFmt(u.dog)} (${u.source})${u.source === 'Vegas' ? `, model ${pctFmt(u.modelDog)}` : ''}${u.modelPick ? ` · <strong>model upset pick</strong><br><span class="muted small">${esc(MODEL_PICK_NOTE(u))}</span>` : ''}`; })()}</td></tr>
     <tr><td class="l">Win %</td><td>${g.home} ${pctFmt(p.pHome)}</td><td>${mkt != null ? `${g.home} ${pctFmt(mkt)}` : '–'}</td><td class="l muted">Vegas = moneyline with the vig removed</td></tr>
     ${played}`;
   const r = gameRecord;

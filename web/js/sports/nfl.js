@@ -167,7 +167,10 @@ export default {
     q1: { kPlayer: 30, kTeam: 30, kDefense: 30 },
     // Game model: ridge = pseudo-games pulling ratings to average, priorWeight =
     // weight of last season's games, SDs of margin/total around projections.
-    game: { ridge: 6, priorWeight: 0.25, epaWeight: 0.5, epaScale: 0.7, epaFiltered: true, qbDrop: 2.5, marginSd: 14, totalSd: 13 },
+    game: { ridge: 6, priorWeight: 0.25, epaWeight: 0.5, epaScale: 0.7, epaFiltered: true, qbDrop: 2.5, marginSd: 14, totalSd: 13,
+      // Rest edge (pts per day), skill players out (pts per 100% of team fantasy
+      // production), wind above windFrom mph and cold below coldBelow °F on the total.
+      restPerDay: 0, injuryPerShare: 10, windFrom: 10, windPerMph: 0.4, coldBelow: 40, coldPerDeg: 0.2 },
     totalClamp: [0.6, 1.6],
   },
 

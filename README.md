@@ -167,6 +167,29 @@ field).
   Opening lines are softer, and line snapshots are now being recorded, so this
   can be re-tested against openers once a few weeks are collected.
 
+### Upsets
+
+Favorites lose about a third of NFL games (Vegas favorites lost 33% of
+2024–26 games; the model's favorites 36.5%). The Matchups page shows it:
+
+* **Upset watch** banner: expected upsets this week = the sum of each
+  underdog's chance (e.g. 5.1 of 14 in Week 7), plus the historical rate.
+  After a week is played it lists the upsets that happened.
+* Each card: the underdog and its chance (Vegas moneyline without the vig,
+  which is better calibrated than the model; model's number next to it).
+  **Upset alert** = Vegas and the model both give the underdog 40%+.
+  **Model upset pick** = the model favors the Vegas underdog; a gap like that
+  often means the market knows something first (QB status, lineup news).
+* Sort cards **by upset chance**.
+* Backtest: underdogs at 35–45% won 38.5%, at 25–35% won 27%, at
+  0–25% won 20%; the chances shown are real.
+
+The game model also now adjusts for injured skill players (10 pts per 100%
+of a team's fantasy production ruled out, applied to the margin), wind above
+10 mph (−0.4 per mph on the total) and cold below 40°F (−0.2 per degree),
+using the live forecast for upcoming games. Rest was tested and added nothing
+once injuries were in. Margin error 10.25 → 10.22, total 10.28 → 10.23.
+
 ### First-quarter projections
 
 **Projections → 1st quarter**: 1Q passing yards, rushing yards, receptions and
