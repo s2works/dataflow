@@ -81,8 +81,10 @@ snapshot of every upcoming game's line on each run (`web/data/nfl/lines_<season>
 * The dashboard checks `index.json` every 5 minutes (and when you come back to
   the tab) and reloads changed data in place, keeping your week/tab. Weather
   forecasts refresh hourly. The footer shows when data last changed.
-* For this to reach the browser, host `web/` from the repo (GitHub Pages,
-  Vercel, Netlify, …) so each data commit is redeployed.
+* Hosted on Vercel (project `dataflow`, root directory `web/`, no build
+  step): **https://dataflow-swart-three.vercel.app**. Every push to the
+  production branch, including the refresh job's data commits, redeploys
+  automatically.
 
 ### Controls
 

@@ -85,7 +85,6 @@ export function buildProjector(sport, model, { history = [], weather = new Map()
   function teamContext(team) {
     if (contexts.has(team)) return contexts.get(team);
     const roster = byTeam.get(team) || [];
-    // Missing = real role, and either ruled out this week or absent lately (IR, etc).
     // Missing = real role and ruled Out/Doubtful on this week's report. Players
     // absent for weeks (IR) aren't added: backtests showed their absence is
     // already reflected in teammates' recent numbers.
