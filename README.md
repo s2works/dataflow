@@ -359,7 +359,8 @@ model stands on its own (judged against results) and goalies are *probable*.
 
 | Tab | What you get |
 | --- | --- |
-| **Matchups** | Day preview cards: model win % bar, upset chance, projected score, total goals (over 5.5 / 6.5), puck line, probable goalies with projected saves, top 3 skaters (chance of a point, projected shots). Upset watch banner. Click a game for the full projection, skater props and team matchup. |
+| **Matchups** | Day preview cards: model win % bar, upset chance, projected score, total goals (over 5.5 / 6.5), puck line, probable goalies with projected saves, top 3 skaters (chance of a point, projected shots), a **B2B** badge for teams on the second night of a back-to-back. Upset watch banner. Click a game for the full projection (incl. rest days), skater props and team matchup. |
+| **Player Edges** | Every skater playing that day vs what tonight's opponent allows to his position, for points, shots, goals, assists or blocks: his per-game number, opponent allowance with rank, matchup multiplier (regressed toward 1.00 by games played), adjusted number, opposing probable goalie and save %, opponent shots allowed, the full model's projection, and a **Spot** column (opponent or own team on a back-to-back, extra rest, his home/road split, hot/cold last 5). |
 | **Player Props** | Skaters: shots on goal (chance of 2+ … 5+), points (1+ with fair odds, 2+), anytime goal, assist, blocked shots, with the top reasons. Goalie saves view: probable starter, why, shots against × save %, chances at three lines. |
 | **Defense vs Position** | What each team allows per game to centers, wingers and defensemen (points, goals, assists, shots, blocks), plus shots and goals allowed. |
 | **Team Rankings** | Offense/defense ranks (goals, shots, shooting %, PP goals, hits, faceoffs) and a Power rating. |
@@ -374,15 +375,21 @@ days, each projected from earlier games only, ~21,600 skater-games):
   (last 3 games; line/PP promotions show up in minutes first). Each stat has
   its own backtested spread. Calibration: shots 2.5+ predicted 41% → 41%,
   56% → 57%; 1+ point 42% → 43%; anytime goal 26% → 26%; 1+ assist
-  41% → 41%; blocks 1.5+ 42% → 40%. Back-to-backs tested: no effect.
+  41% → 41%; blocks 1.5+ 42% → 40%. Also tested and left out of skater
+  projections (weights 0, shown as context on Player Edges instead): his
+  team or the opponent on a back-to-back and 3+ days of rest (no change in
+  error), his own home/road split (worse at every regression strength) and
+  hot/cold last-5 form (worse).
 * **Goalies:** probable starter = most starts in the last 10, or the backup
   on the second night of a back-to-back if the starter played yesterday:
   right 64% of the time (vs 57% for "most recent starts"). Saves = shots
   against (opponent volume × team suppression × venue, regressed) × save %
   (regressed by shots faced); MAE 5.5 vs 5.7 for the goalie's own average.
 * **Games:** opponent-adjusted goal and shot ratings (50/50), home ice,
-  probable-goalie adjustment (half weight), Poisson goals per side, ties to
-  overtime with a small home edge, squeezed 30% toward 50/50 (raw was
-  overconfident). Win % log loss 0.685 vs 0.691 for "home team always 54%";
-  total goals MAE 1.80 vs 1.83. The model's favorite lost **46%** of games:
+  probable-goalie adjustment (half weight), back-to-backs (a team on the
+  second night scores 0.2 fewer goals and allows 0.2 more: win % log loss
+  0.6848 → 0.6833), Poisson goals per side, ties to overtime with a small
+  home edge, squeezed 30% toward 50/50 (raw was overconfident). Win % log
+  loss 0.683 vs 0.691 for "home team always 54%"; total goals MAE 1.80 vs
+  1.83. The model's favorite lost **45%** of games:
   hockey is close to a coin flip, so the cards always show the upset chance.

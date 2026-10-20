@@ -69,9 +69,21 @@ export default {
     opponentStats: ['sog', 'blk'],
     homeWeight: 1,
     goalieWeight: 1, // opponent goalie save % on goals/points
-    b2bWeight: 0, // second night of a back-to-back
+    // Tested and left at 0 (no gain or worse in backtests); shown as context
+    // on Player Edges instead. Skater shots/points barely move on back-to-
+    // backs; personal home/road splits and hot streaks are mostly noise.
+    b2bWeight: 0, // his team on the second night of a back-to-back (cut)
+    oppB2bWeight: 0, // opponent on the second night of a back-to-back (boost)
+    restWeight: 0, // 3+ days since his team's last game
+    split: { weight: 0, k: 20 }, // his own home/away split, regressed by venue games
+    form: { weight: 0, games: 5 }, // last N games vs baseline
     toiTrend: { weight: 0.6, games: 3, cap: 0.2 },
     saves: { kShots: 1500, kGames: 10, r: 60 },
-    game: { ridge: 6, priorWeight: 0.25, shotWeight: 0.5, homeIce: true, goalieWeight: 0.5, otHomeEdge: 0.02, calib: 0.7 },
+    game: {
+      ridge: 6, priorWeight: 0.25, shotWeight: 0.5, homeIce: true, goalieWeight: 0.5, otHomeEdge: 0.02, calib: 0.7,
+      // Second night of a back-to-back: goals for / against shift (backtest:
+      // win log loss 0.6848 → 0.6833, favorites' miss rate 45.7% → 44.9%).
+      b2bFor: 0.2, b2bAgainst: 0.2,
+    },
   },
 };

@@ -1,5 +1,5 @@
-// NHL dashboard: Matchups (game previews + upsets), Player Props (skaters and
-// goalies), Defense vs Position, Team Rankings. Shares the ranking engine with
+// NHL dashboard: Matchups (game previews + upsets), Player Edges, Player Props
+// (skaters and goalies), Defense vs Position, Team Rankings. Shares the ranking engine with
 // the NFL app; models live in nhl/model.js.
 
 import sport from './sports/nhl.js';
@@ -15,7 +15,7 @@ const fairOdds = (p) => (!(p > 0 && p < 1) ? '–' : p >= 0.5 ? `${Math.round((-
 const POS_NAME = { C: 'centers', W: 'wingers', D: 'defensemen' };
 const REFRESH_MS = 5 * 60e3;
 
-const state = { season: null, week: null, lastN: 0, tab: 'matchups', game: null, pos: 'ALL', search: '', propView: 'skaters', dvpMetric: 'pts', rankSide: 'off', weekSort: 'time', sort: {} };
+const state = { season: null, week: null, lastN: 0, tab: 'matchups', game: null, pos: 'ALL', search: '', propView: 'skaters', edgeMetric: 'pts', dvpMetric: 'pts', rankSide: 'off', weekSort: 'time', sort: {} };
 let data = null, model = null, projector = null, gameModel = null, history = [], record = null;
 let indexUpdated = {}, lastCheck = null;
 const cache = new Map();
@@ -28,7 +28,7 @@ async function fetchJSON(url) {
 }
 
 async function boot() {
-  $('#tabs').innerHTML = [['matchups', 'Matchups'], ['props', 'Player Props'], ['dvp', 'Defense vs Position'], ['rankings', 'Team Rankings']]
+  $('#tabs').innerHTML = [['matchups', 'Matchups'], ['edges', 'Player Edges'], ['props', 'Player Props'], ['dvp', 'Defense vs Position'], ['rankings', 'Team Rankings']]
     .map(([id, label]) => `<a href="#${id}" data-tab="${id}">${label}</a>`).join('');
   const weekLabel = $('#week').closest('label');
   if (weekLabel?.firstChild) weekLabel.firstChild.textContent = 'Date ';
@@ -107,7 +107,7 @@ function renderMeta() {
 
 function readHash(doRender = true) {
   const [tab, game] = location.hash.replace(/^#/, '').split('/');
-  state.tab = ['matchups', 'props', 'dvp', 'rankings'].includes(tab) ? tab : 'matchups';
+  state.tab = ['matchups', 'edges', 'props', 'dvp', 'rankings'].includes(tab) ? tab : 'matchups';
   state.game = state.tab === 'matchups' && game ? game : null;
   if (!doRender || !model) return;
   const g = data.schedule.find((x) => String(x.game_id) === state.game);
@@ -118,7 +118,7 @@ function render() {
   document.querySelectorAll('#tabs a').forEach((a) => a.classList.toggle('on', a.dataset.tab === state.tab));
   const view = $('#view');
   if (!model.N) { view.innerHTML = '<div class="card">No games played before this date yet: pick a later date or the previous season.</div>'; return; }
-  const views = { matchups: state.game ? viewGame : viewDay, props: viewProps, dvp: viewDvp, rankings: viewRankings };
+  const views = { matchups: state.game ? viewGame : viewDay, edges: viewEdges, props: viewProps, dvp: viewDvp, rankings: viewRankings };
   view.innerHTML = views[state.tab]();
   wire(view);
 }
@@ -209,7 +209,7 @@ function viewDay() {
       <div class="teams"><span>${g.away}</span><span class="vs">@</span><span>${g.home}</span></div>
       ${winBar(g, p)}
       ${upset}
-      <div class="when">${final ? `Final ${g.away} ${g.away_score} – ${g.home} ${g.home_score}` : esc(faceoff(g))} · ${esc(g.venue ?? '')}</div>
+      <div class="when">${final ? `Final ${g.away} ${g.away_score} – ${g.home} ${g.home_score}` : esc(faceoff(g))} · ${esc(g.venue ?? '')}${restBadges(g, p)}</div>
       <table class="preview">
         <tr><td class="l">Proj. score</td><td>${g.away} ${fmt(p.ptsAway, 1)} – ${g.home} ${fmt(p.ptsHome, 1)}</td></tr>
         <tr><td class="l">Total goals</td><td>${fmt(p.total, 1)} <span class="rk">o5.5 ${pct(p.pOver55)} · o6.5 ${pct(p.pOver65)}</span></td></tr>
@@ -247,6 +247,13 @@ function upsetSummary(games) {
     <span class="muted small">No free NHL betting lines, so these are the model's own numbers; win % includes overtime and shootouts.</span></div>`;
 }
 
+const C_GAME = sport.projection.game;
+const restText = (t, b2b, rest) => (b2b ? `<strong>${t} on a back-to-back</strong>` : rest == null ? `${t}: first game` : `${t}: ${rest - 1} day${rest === 2 ? '' : 's'} rest`);
+function restBadges(g, p) {
+  const tired = [[g.away, p.b2bAway], [g.home, p.b2bHome]].filter(([, b]) => b).map(([t]) => t);
+  return tired.length ? ` <span class="badge alert" title="Played yesterday: second night of a back-to-back (the model docks these teams' goals)">${tired.join(' & ')} B2B</span>` : '';
+}
+
 const shortName = (n) => n; // fastRhockey names are already short ("C. McDavid")
 
 // ------------------------------------------------------------- game page ----
@@ -276,6 +283,7 @@ function viewGame() {
           <tr><td class="l">Upset chance</td><td class="l" colspan="3">${dogTeam} ${pct(dog)}</td></tr>
           <tr><td class="l">Total goals</td><td class="l" colspan="3">${fmt(p.total, 2)} · over 5.5 ${pct(p.pOver55)} · over 6.5 ${pct(p.pOver65)}</td></tr>
           <tr><td class="l">Puck line</td><td class="l" colspan="3">${g.home} −1.5 ${pct(p.pHomeMinus15)} · ${g.away} +1.5 ${pct(1 - p.pHomeMinus15)}</td></tr>
+          <tr><td class="l">Schedule</td><td class="l" colspan="3">${restText(g.away, p.b2bAway, p.restAway)} · ${restText(g.home, p.b2bHome, p.restHome)}${p.b2bHome || p.b2bAway ? ` <span class="rk">a team on a back-to-back is projected ${fmt(C_GAME.b2bFor, 2)} fewer goals for and ${fmt(C_GAME.b2bAgainst, 2)} more against</span>` : ''}</td></tr>
           ${gRow(g.away, ga)}${gRow(g.home, gh)}
         </table></div>
         <p class="muted small">${record?.games ? `Backtest (${record.games.n} games): win % log loss ${record.games.winLL.toFixed(3)} vs ${record.games.naiveLL.toFixed(3)} for "home team always ${pct(record.games.homeRate)}"; total goals off by ${record.games.totMae.toFixed(2)} on average. Probable goalies were right ${pct(record.goalies.starterRight)} of the time.` : ''}</p>
@@ -288,6 +296,88 @@ function viewGame() {
         </table></div>
       </div>
     </div>`;
+}
+
+// ------------------------------------------------------- player edges ----
+const EDGE_METRICS = [['pts', 'Points', 2], ['sog', 'Shots', 2], ['g', 'Goals', 2], ['a', 'Assists', 2], ['blk', 'Blocks', 2]];
+
+function viewEdges() {
+  const N = model.N;
+  const k = state.edgeMetric;
+  const [, mLabel, d] = EDGE_METRICS.find((m) => m[0] === k);
+  const scoring = k === 'pts' || k === 'g' || k === 'a';
+  let rows = skaterRows().map((x) => {
+    const s = model.posStat(x.r.opp, x.p.pos, k, 'def');
+    // Regressed toward 1 by the opponent's games played (raw early-season
+    // numbers swing wildly), same as the projection model.
+    const raw = s.value != null && s.leagueAvg > 0.01 ? s.value / s.leagueAvg : null;
+    const n = model.team[x.r.opp]?.n ?? 0;
+    const mult = raw == null ? null : 1 + (raw - 1) * (n / (n + sport.projection.regress.opponent));
+    return { ...x, s, raw, mult, sit: projector.situation(x.p, x.r.game), og: x.r.oppGoalie, oppSa: model.teamStat(x.r.opp, 'sog', 'def') };
+  });
+  if (state.pos !== 'ALL') rows = rows.filter((x) => x.p.pos === state.pos);
+  const q = state.search.trim().toLowerCase();
+  if (q) rows = rows.filter((x) => x.p.name.toLowerCase().includes(q) || x.p.team.toLowerCase() === q);
+  const lgSv = projector.ctx.lgSvPct;
+  const spot = (x) => {
+    const t = x.sit, chips = [];
+    if (t.oppB2b) chips.push(`<span class="chip" style="background:${edgeColor(1, 2)}" title="Opponent played yesterday">${x.r.opp} on B2B</span>`);
+    if (t.ownB2b) chips.push(`<span class="chip" style="background:${edgeColor(-1, 2)}" title="His team played yesterday">${x.p.team} on B2B</span>`);
+    if (!t.ownB2b && t.rest != null && t.rest >= 4) chips.push(`<span class="chip ctx">${t.rest - 1} days off</span>`);
+    const sp = t.split[k];
+    if (t.nVenue >= 10 && t.nOther >= 10 && sp.other > 0.05) {
+      const r = sp.venue / sp.other - 1;
+      if (Math.abs(r) >= 0.25) chips.push(`<span class="chip ctx" title="His own ${mLabel.toLowerCase()} per game ${t.isHome ? 'at home' : 'on the road'} vs ${t.isHome ? 'away' : 'home'} (this + last season). Shown for context: personal splits didn't predict better in backtests.">${fmt(sp.venue, d)} ${t.isHome ? 'home' : 'road'} vs ${fmt(sp.other, d)} ${t.isHome ? 'road' : 'home'}</span>`);
+    }
+    if (t.last5 && x.p.avg[k] > 0.05) {
+      const r = t.last5[k] / x.p.avg[k] - 1;
+      if (Math.abs(r) >= 0.4) chips.push(`<span class="chip ctx" title="Last 5 games vs season average. Context only: streaks didn't predict better in backtests.">${r > 0 ? 'Hot' : 'Cold'}: ${fmt(t.last5[k], d)} last 5</span>`);
+    }
+    return chips.join('') || '<span class="muted">–</span>';
+  };
+  const cols = [
+    { id: 'name', label: 'Player', cls: 'l', sort: (x) => x.p.name, cell: (x) => esc(x.p.name) },
+    { id: 'pos', label: 'Pos', cls: 'c', sort: (x) => x.p.pos, cell: (x) => `<span class="pos">${x.p.pos}</span>` },
+    { id: 'game', label: 'Game', cls: 'l', sort: (x) => x.p.team, cell: (x) => `${x.p.team} <span class="vs">${x.r.isHome ? 'vs' : '@'}</span> ${x.r.opp}` },
+    { id: 'gp', label: 'GP', sort: (x) => x.p.n, cell: (x) => x.p.n },
+    { id: 'toi', label: 'TOI', sort: (x) => x.p.avg.toi, cell: (x) => fmt(x.p.avg.toi, 1) },
+    { id: 'avg', label: `${mLabel}/G`, title: `His ${mLabel.toLowerCase()} per game (sample above)`, sort: (x) => x.p.avg[k], cell: (x) => fmt(x.p.avg[k], d) },
+    {
+      id: 'allow', label: 'Opp allows to pos', title: `${mLabel} per game the opponent allows to his position (rank: 1 = stingiest, ${N} = most generous)`,
+      sort: (x) => x.s.value, bg: (x) => edgeColor(x.s.rank != null ? x.s.rank - (N + 1) / 2 : null, (N - 1) / 2),
+      cell: (x) => `${fmt(x.s.value, d)}<span class="rk">${ordinal(x.s.rank)}</span>`,
+    },
+    {
+      id: 'mult', label: 'Matchup ×', title: `Opponent allowed ÷ league average allowed to this position, regressed toward 1.00 by games played (${sport.projection.regress.opponent} games = halfway). Hover a cell for the raw number.`,
+      sort: (x) => x.mult, bg: (x) => edgeColor(x.mult != null ? (x.mult - 1) * 100 : null, 20),
+      cell: (x) => (x.mult == null ? '–' : `<span title="raw ${x.raw.toFixed(2)}×">${x.mult.toFixed(2)}×</span>`),
+    },
+    { id: 'adj', label: `Adj ${mLabel}/G`, title: `${mLabel}/G × matchup multiplier (raw, no other factors)`, sort: (x) => (x.mult == null ? null : x.p.avg[k] * x.mult), cell: (x) => (x.mult == null ? '–' : fmt(x.p.avg[k] * x.mult, d)) },
+    {
+      id: 'goalie', label: 'Opp goalie', title: 'Probable opposing goalie and save % (this + last season, regressed). Green = leaky goalie (good for scorers).',
+      sort: (x) => (x.og ? -x.og.sv : null), bg: (x) => (x.og && (scoring || k === 'sog') ? edgeColor((lgSv - x.og.sv) * 1000, 15) : ''),
+      cell: (x) => (x.og ? `${esc(x.og.name)} <span class="rk">${(x.og.sv * 100).toFixed(1)}%</span>` : '–'),
+    },
+    {
+      id: 'oppsa', label: 'Opp shots allowed', title: `Shots per game the opponent allows (rank: 1 = fewest)`,
+      sort: (x) => x.oppSa.value, bg: (x) => edgeColor(x.oppSa.rank != null ? x.oppSa.rank - (N + 1) / 2 : null, (N - 1) / 2),
+      cell: (x) => `${fmt(x.oppSa.value, 1)}<span class="rk">${ordinal(x.oppSa.rank)}</span>`,
+    },
+    {
+      id: 'model', label: 'Model', title: `Full model projection (everything that backtested well: opponent, home ice, goalie, ice-time trend) and change vs his average`,
+      sort: (x) => (x.r.base[k] ? x.r.proj[k] / x.r.base[k] : null), bg: (x) => edgeColor(x.r.base[k] ? (x.r.proj[k] / x.r.base[k] - 1) * 100 : null, 25),
+      cell: (x) => { const r = x.r.base[k] ? x.r.proj[k] / x.r.base[k] - 1 : 0; return `<strong>${fmt(x.r.proj[k], d)}</strong> <span class="rk">${r >= 0 ? '+' : '−'}${Math.abs(r * 100).toFixed(0)}%</span>`; },
+    },
+    { id: 'spot', label: 'Spot', cls: 'l wrap', title: 'Back-to-backs, rest, his home/road split and streaks', cell: (x) => `<div class="chips">${spot(x)}</div>` },
+  ];
+  return `<div class="toolbar">
+      ${seg('edgeMetric', EDGE_METRICS.map(([v, l]) => [v, l]))}
+      ${seg('pos', [['ALL', 'All'], ['C', 'C'], ['W', 'W'], ['D', 'D']])}
+      <input id="search" type="search" placeholder="Player or team…" value="${esc(state.search)}">
+      <span class="spacer"></span>
+      <span class="muted">Every skater playing ${esc(dayLabel(state.week))} vs what tonight's opponent allows to his position. Green = soft matchup. ${sampleNote()}</span>
+    </div>
+    <div class="card">${table(`edges-${k}`, cols, rows, { col: 'mult', asc: false })}</div>`;
 }
 
 // ----------------------------------------------------------- props ----

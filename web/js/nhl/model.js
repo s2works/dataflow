@@ -119,6 +119,15 @@ function context(sport, model, history) {
     d.setUTCDate(d.getUTCDate() - 1);
     return playedDates.get(team)?.has(d.toISOString().slice(0, 10)) ?? false;
   };
+  // Days since the team's previous game (null for its first game).
+  const sortedDates = new Map([...playedDates].map(([t, set]) => [t, [...set].sort()]));
+  const restDays = (team, g) => {
+    const prior = (sortedDates.get(team) || []).filter((d) => d < g.gameday);
+    if (!prior.length) return null;
+    return Math.round((new Date(`${g.gameday}T12:00:00Z`) - new Date(`${prior[prior.length - 1]}T12:00:00Z`)) / 864e5);
+  };
+  // Who was home in every loaded game (for players' home/away splits).
+  const homeOf = new Map([...history, data].flatMap((d) => d.schedule.map((x) => [x.game_id, x.home])));
 
   // Team shots for / against per game (for goalie saves and the game model).
   const teamShots = new Map();
@@ -128,7 +137,7 @@ function context(sport, model, history) {
     teamShots.set(r.team, s);
   }
 
-  return { data, beforeWeek, logs, prev, league, lgSvPct, svPct, probable, b2b, teamShots, names, dayOf };
+  return { data, beforeWeek, logs, prev, league, lgSvPct, svPct, probable, b2b, restDays, homeOf, teamShots, names, dayOf };
 }
 
 // ---- skaters -------------------------------------------------------------------
@@ -198,10 +207,56 @@ export function buildNhlProjector(sport, model, { history = [], disabled = new S
       });
     }
 
-    // Second night of a back-to-back.
-    if (!disabled.has('b2b') && P.b2bWeight && ctx.b2b(pl.team, g)) {
+    // Second night of a back-to-back: his team tired, or the opponent tired.
+    const ownB2b = ctx.b2b(pl.team, g), oppB2b = ctx.b2b(opp, g);
+    if (!disabled.has('b2b') && P.b2bWeight && ownB2b) {
       const m = 1 - P.b2bWeight;
-      factors.push({ id: 'b2b', label: 'Back-to-back', text: `${pl.team} played yesterday`, m: () => m });
+      factors.push({ id: 'b2b', label: 'Back-to-back', text: `${pl.team} played yesterday`, m: (k) => (k === 'blk' ? 1 : m) });
+    }
+    if (!disabled.has('oppB2b') && P.oppB2bWeight && oppB2b) {
+      const m = 1 + P.oppB2bWeight;
+      factors.push({ id: 'oppB2b', label: 'Tired opponent', text: `${opp} played yesterday`, m: (k) => (k === 'blk' ? 1 : m) });
+    }
+    // Extra rest (3+ days off): rust or freshness.
+    const rest = ctx.restDays(pl.team, g);
+    if (!disabled.has('rest') && P.restWeight && rest != null && rest >= 3) {
+      const m = 1 + P.restWeight;
+      factors.push({ id: 'rest', label: 'Rest', text: `${rest} days since ${pl.team}'s last game`, m: (k) => (k === 'blk' ? 1 : m) });
+    }
+
+    // His own home/away split beyond the league-wide home-ice effect,
+    // regressed by games played at this venue type (this + last season).
+    if (!disabled.has('split') && P.split.weight) {
+      const all = [...(ctx.logs.get(pl.id) || []).slice(0, pl.n), ...(ctx.prev.get(pl.id) || [])];
+      const venue = all.filter((r) => (ctx.homeOf.get(r.game_id) === r.team) === isHome);
+      if (venue.length >= 5 && all.length >= 10) {
+        const lgVenue = { sog: isHome ? ctx.league.homeSog : ctx.league.awaySog, g: isHome ? ctx.league.homeGf : ctx.league.awayGf };
+        const mult = {};
+        for (const k of statKeys) {
+          const tot = avgOf(all, k);
+          if (!(tot > 0.05)) { mult[k] = 1; continue; }
+          const lv = k === 'sog' ? lgVenue.sog : scoring(k) ? lgVenue.g : 1;
+          const raw = avgOf(venue, k) / tot / lv;
+          mult[k] = clamp(1 + P.split.weight * (regress(raw, venue.length, P.split.k) - 1), 0.8, 1.25);
+        }
+        const v = avgOf(venue, 'sog'), o = avgOf(all.filter((r) => (ctx.homeOf.get(r.game_id) === r.team) !== isHome), 'sog');
+        factors.push({
+          id: 'split', label: isHome ? 'Home split' : 'Road split',
+          text: `${v.toFixed(1)} SOG/G ${isHome ? 'at home' : 'on the road'} vs ${o.toFixed(1)} ${isHome ? 'away' : 'home'} (${venue.length} games)`,
+          m: (k) => mult[k] ?? 1,
+        });
+      }
+    }
+
+    // Hot/cold streak: last N games vs his baseline.
+    if (!disabled.has('form') && P.form.weight) {
+      const rows = ctx.logs.get(pl.id) || [];
+      if (rows.length > P.form.games) {
+        const recent = rows.slice(0, P.form.games);
+        const mult = {};
+        for (const k of statKeys) mult[k] = base[k] > 0.05 ? clamp(1 + P.form.weight * (avgOf(recent, k) / base[k] - 1), 0.8, 1.25) : 1;
+        factors.push({ id: 'form', label: 'Form', text: `${avgOf(recent, 'pts').toFixed(2)} pts, ${avgOf(recent, 'sog').toFixed(1)} SOG last ${P.form.games}`, m: (k) => mult[k] });
+      }
     }
 
     // Ice-time trend (line / power-play promotions show up in TOI first).
@@ -233,7 +288,26 @@ export function buildNhlProjector(sport, model, { history = [], disabled = new S
     return { opp, isHome, game: g, base, proj, probs, factors, oppGoalie: og, toi: base.toi };
   }
 
-  return { project, ctx };
+  // Schedule spot and his own home/away split, for display. The split and
+  // streaks don't feed the projection: they made backtests worse.
+  function situation(pl, g) {
+    const isHome = g.home === pl.team;
+    const opp = isHome ? g.away : g.home;
+    const all = [...(ctx.logs.get(pl.id) || []).slice(0, pl.n), ...(ctx.prev.get(pl.id) || [])];
+    const atHome = all.filter((r) => ctx.homeOf.get(r.game_id) === r.team);
+    const away = all.filter((r) => ctx.homeOf.get(r.game_id) !== r.team);
+    const venue = isHome ? atHome : away, other = isHome ? away : atHome;
+    const split = Object.fromEntries(statKeys.map((k) => [k, { venue: avgOf(venue, k), other: avgOf(other, k) }]));
+    const recent = (ctx.logs.get(pl.id) || []).slice(0, 5);
+    return {
+      isHome, opp, ownB2b: ctx.b2b(pl.team, g), oppB2b: ctx.b2b(opp, g),
+      rest: ctx.restDays(pl.team, g), oppRest: ctx.restDays(opp, g),
+      split, nVenue: venue.length, nOther: other.length,
+      last5: recent.length >= 5 ? Object.fromEntries(statKeys.map((k) => [k, avgOf(recent, k)])) : null,
+    };
+  }
+
+  return { project, situation, ctx };
 }
 
 function rankWord(model, rank) {
@@ -330,6 +404,12 @@ export function buildNhlGameModel(sport, data, { beforeWeek = Infinity, history 
     const gh = goalieAdj(g.home, la / shPct), ga = goalieAdj(g.away, lh / shPct);
     la += gh.goals; // home goalie affects away goals
     lh += ga.goals;
+    // Second night of a back-to-back: fewer goals for, more against.
+    const b2bHome = ctx ? ctx.b2b(g.home, g) : false, b2bAway = ctx ? ctx.b2b(g.away, g) : false;
+    if (C.b2bFor || C.b2bAgainst) {
+      if (b2bHome) { lh -= C.b2bFor || 0; la += C.b2bAgainst || 0; }
+      if (b2bAway) { la -= C.b2bFor || 0; lh += C.b2bAgainst || 0; }
+    }
     lh = Math.max(0.8, lh); la = Math.max(0.8, la);
     let pH = 0, pT = 0, pPL = 0, over55 = 0, over65 = 0;
     for (let i = 0; i <= 12; i++) for (let j = 0; j <= 12; j++) {
@@ -344,7 +424,8 @@ export function buildNhlGameModel(sport, data, { beforeWeek = Infinity, history 
     return {
       ptsHome: lh, ptsAway: la, margin: lh - la, total: lh + la, pHome,
       pRegTie: pT, pHomeMinus15: pPL, pOver55: over55, pOver65: over65,
-      goalieHome: gh.goalie, goalieAway: ga.goalie,
+      goalieHome: gh.goalie, goalieAway: ga.goalie, b2bHome, b2bAway,
+      restHome: ctx?.restDays(g.home, g) ?? null, restAway: ctx?.restDays(g.away, g) ?? null,
     };
   }
   const rating = (t) => ({ off: O[t], def: -D[t], net: O[t] - D[t] });
