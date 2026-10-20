@@ -222,7 +222,7 @@ snapshot of every upcoming game's line on each run (`web/data/nfl/lines_<season>
   forecasts refresh hourly. The footer shows when data last changed.
 * Hosted on Vercel (project `dataflow`, root directory `web/`, no build
   step): **https://dataflow-swart-three.vercel.app**. Every push to the
-  production branch, including the refresh job's data commits, redeploys
+  production branch (`main`), including the refresh job's data commits, redeploys
   automatically.
 
 ### Controls
