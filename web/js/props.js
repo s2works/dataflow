@@ -16,11 +16,17 @@ export function fairOver(overPrice, underPrice) {
 
 // P(actual > line) given a projection, read off the fitted distribution of
 // actual ÷ projected for that stat (see tools/fit_prop_dist.mjs).
+// Quantiles for a projection: the bucket fitted on similar-sized projections.
+function quantilesFor(d, proj) {
+  if (!d.buckets?.length) return d.q;
+  return (d.buckets.find((b) => b.upTo == null || proj <= b.upTo) ?? d.buckets[d.buckets.length - 1]).q;
+}
+
 export function overProb(dist, stat, proj, line) {
   const d = dist?.[stat];
   if (!d || !(proj > 0)) return null;
   const x = line / proj;
-  const q = d.q, n = q.length - 1;
+  const q = quantilesFor(d, proj), n = q.length - 1;
   if (x < q[0]) return 1;
   if (x >= q[n]) return 0;
   // Fraction of the distribution at or below x, interpolated between quantiles.
@@ -34,8 +40,31 @@ export function overProb(dist, stat, proj, line) {
 // Typical (median) outcome for a projection: averages sit above medians for
 // skewed stats like yardage, and book lines are set near the median.
 export function medianOutcome(dist, stat, proj) {
-  const q = dist?.[stat]?.q;
+  const q = dist?.[stat] && quantilesFor(dist[stat], proj);
   return q ? proj * q[Math.floor(q.length / 2)] : proj;
+}
+
+// The q-th quantile (0–1) of the outcome for a projection, e.g. 0.25 / 0.75
+// for a likely range.
+export function outcomeQuantile(dist, stat, proj, q) {
+  const qs = dist?.[stat] && quantilesFor(dist[stat], proj);
+  if (!qs) return null;
+  const i = q * (qs.length - 1), lo = Math.floor(i), hi = Math.ceil(i);
+  return proj * (qs[lo] + (qs[hi] - qs[lo]) * (i - lo));
+}
+
+// P(X >= k) for a negative binomial with mean m and size r (Poisson as r → ∞).
+// Used for small counts like first-quarter receptions, where r ≈ 8 fit the
+// backtest best (slightly more spread than Poisson).
+export function nbAtLeast(m, r, k) {
+  m = Math.max(m, 0.01);
+  const p = r / (r + m);
+  let term = Math.pow(p, r), cdf = 0; // P(X = 0)
+  for (let x = 0; x < k; x++) {
+    cdf += term;
+    term *= ((x + r) / (x + 1)) * (1 - p);
+  }
+  return 1 - cdf;
 }
 
 // P(X >= k) for a Poisson with mean lam (pass TDs).

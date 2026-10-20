@@ -108,6 +108,23 @@ strengths and made predictions worse or no better, so they're context only
 fair odds. Honest caveat: this barely beats a coin flip in backtests, so
 projections are shrunk hard toward a league-typical 1.5.
 
+### First-quarter projections
+
+**Projections → 1st quarter**: 1Q passing yards, rushing yards, receptions and
+receiving yards for every key player, with the median and likely range (middle
+50% of outcomes) for yardage, and P(1+) / P(2+) for receptions.
+
+* 1Q projection = full-game projection × the share of that stat that comes in
+  the first quarter. League: ~22% of passing/receiving, ~24% of rushing.
+  The share is nudged by the player's, team's and opponent's own 1Q
+  tendencies, regressed hard (k = 30 games); backtests found those worth only
+  ~1% in error, so the full-game projection does almost all the work.
+  Cell color = this player's 1Q share vs league (fast/slow starters).
+* Yardage ranges come from the backtested spread of outcomes, fitted
+  separately by projection size (zero-yard quarters are common for fringe
+  players, rarer for stars). Receptions use a negative binomial (r = 8), which
+  backtested best: P(1+) predicted 41% → actual 39%, 59% → 61%, 75% → 73%.
+
 ### Player props vs projection
 
 **Projections → Props vs projection** lists each prop line (pass yds, pass
@@ -232,6 +249,7 @@ web/js/projections.js     player projection + touchdown model, weather forecasts
 web/js/props.js           prop odds math, P(over a line)
 web/js/boombust.js        boom/bust angles and probabilities
 web/js/firsttd.js         first-TD probabilities
+web/js/q1.js              first-quarter projections
 web/js/sports/nfl.js      NFL stats, positions, projection weights, stadiums
 tools/backtest.mjs        projection accuracy check
 tools/fit_prop_dist.mjs   prop outcome distributions (refit by the refresh job)

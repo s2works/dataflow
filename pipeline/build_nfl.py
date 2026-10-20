@@ -42,6 +42,7 @@ PBP_COLS = [
     "game_id", "season_type", "yardline_100", "rush_attempt", "pass_attempt", "two_point_attempt",
     "rusher_player_id", "receiver_player_id", "rush_touchdown", "pass_touchdown",
     "play_id", "qtr", "touchdown", "td_team", "td_player_id",
+    "passer_player_id", "passing_yards", "receiving_yards", "rushing_yards", "complete_pass",
 ]
 
 # Player props from The Odds API (https://the-odds-api.com). Optional: only runs
@@ -116,7 +117,10 @@ POS_COLS = {
     "fantasy_points_ppr": "fpts",
 }
 
-RZ_COLS = ["car_gl", "car_rz", "tgt_rz", "q1_car", "q1_tgt", "ftd_game", "ftd_team"]
+RZ_COLS = [
+    "car_gl", "car_rz", "tgt_rz", "q1_car", "q1_tgt", "ftd_game", "ftd_team",
+    "q1_rec", "q1_rec_yds", "q1_rush_yds", "q1_pass_yds",
+]
 PLAYER_COLS = POS_COLS  # plus RZ_COLS when play-by-play is available
 
 
@@ -379,6 +383,7 @@ def build_red_zone(season: int) -> tuple[pd.DataFrame | None, dict | None]:
     car_gl  carries inside the 5      car_rz  carries at the 6-20
     tgt_rz  targets inside the 20
     q1_car, q1_tgt   first-quarter carries / targets (scripted, early-game role)
+    q1_rec, q1_rec_yds, q1_rush_yds, q1_pass_yds   first-quarter production
     ftd_game         scored the game's first TD
     ftd_team         scored his team's first TD
     td_rates: P(TD | opportunity) by zone, used to turn usage into expected TDs.
@@ -420,6 +425,16 @@ def build_red_zone(season: int) -> tuple[pd.DataFrame | None, dict | None]:
         runs[runs["qtr"] == 1].groupby(["game_id", "rusher_player_id"]).size().rename("q1_car").rename_axis(index=["game_id", "player_id"]),
         tgts[tgts["qtr"] == 1].groupby(["game_id", "receiver_player_id"]).size().rename("q1_tgt").rename_axis(index=["game_id", "player_id"]),
     ], axis=1)
+
+    q1p = pbp[pbp["qtr"] == 1]
+    idx = ["game_id", "player_id"]
+    q1prod = pd.concat([
+        q1p[q1p["complete_pass"] == 1].groupby(["game_id", "receiver_player_id"]).size().rename("q1_rec").rename_axis(index=idx),
+        q1p.groupby(["game_id", "receiver_player_id"])["receiving_yards"].sum().rename("q1_rec_yds").rename_axis(index=idx),
+        q1p.groupby(["game_id", "rusher_player_id"])["rushing_yards"].sum().rename("q1_rush_yds").rename_axis(index=idx),
+        q1p.groupby(["game_id", "passer_player_id"])["passing_yards"].sum().rename("q1_pass_yds").rename_axis(index=idx),
+    ], axis=1)
+    q1 = q1.join(q1prod, how="outer")
 
     tds = pbp[(pbp["touchdown"] == 1) & pbp["td_player_id"].notna()].sort_values(["game_id", "play_id"])
     first_game = tds.groupby("game_id").head(1).set_index(["game_id", "td_player_id"]).assign(ftd_game=1)["ftd_game"]

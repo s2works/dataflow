@@ -149,6 +149,8 @@ export default {
     // in (none helped in backtests, so none), their regression pseudo-counts,
     // and a rate for defensive/special-teams TDs.
     firstTd: { power: 0.7, apply: [], kEarly: 15, kHistory: 8, kDefense: 25, dstRate: 0.1, scale: 1 },
+    // First-quarter share tilts: regression pseudo-games (backtest-tuned).
+    q1: { kPlayer: 30, kTeam: 30, kDefense: 30 },
     totalClamp: [0.6, 1.6],
   },
 

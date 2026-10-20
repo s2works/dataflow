@@ -1,7 +1,8 @@
 import nfl from './sports/nfl.js';
 import { buildModel, edgeColor, rankColor, ordinal } from './engine.js';
 import { buildProjector, fetchForecasts, weatherLabel } from './projections.js';
-import { overProb, fairOver, impliedProb, poissonAtLeast, medianOutcome } from './props.js';
+import { overProb, fairOver, impliedProb, poissonAtLeast, medianOutcome, outcomeQuantile, nbAtLeast } from './props.js';
+import { buildQ1, Q1_STATS } from './q1.js';
 import { ANGLES, anglesFor, boomBust, angleEffect } from './boombust.js';
 import { buildFirstTd } from './firsttd.js';
 
@@ -563,13 +564,55 @@ function viewProjections() {
   const q = state.search.trim().toLowerCase();
   if (q) rows = rows.filter((x) => x.p.name.toLowerCase().includes(q) || x.p.team.toLowerCase() === q);
   return `<div class="toolbar">
-      ${seg('projView', [['proj', 'Projections'], ['props', 'Props vs projection']])}
+      ${seg('projView', [['proj', 'Projections'], ['q1', '1st quarter'], ['props', 'Props vs projection']])}
       ${seg('pos', [['ALL', 'All'], ...Object.keys(sport.positions).map((p) => [p, p])])}
       <input id="search" type="search" placeholder="Player or team…" value="${esc(state.search)}">
       <span class="spacer"></span>
-      <span class="muted">${props ? propsNote() : ''}Average × opponent, Vegas total, game script, weather, divisional, rest, history vs opponent, recent form. Click a row for the full breakdown. ${sampleNote()}</span>
+      <span class="muted">${props ? propsNote() : ''}${state.projView === 'q1' ? q1Note() : ''}Average × opponent, Vegas total, game script, weather, divisional, rest, history vs opponent, recent form. Click a row for the full breakdown. ${sampleNote()}</span>
     </div>
-    <div class="card">${props ? propsTable('props', propRows(rows)) : projTable('proj', rows)}</div>`;
+    <div class="card">${props ? propsTable('props', propRows(rows)) : state.projView === 'q1' ? q1Table('q1', rows) : projTable('proj', rows)}</div>`;
+}
+
+// ------------------------------------------------------- 1st quarter ----
+function q1Note() {
+  return 'First quarter = full-game projection × the share that comes in Q1 (league ~22% passing, ~24% rushing), nudged by the player\'s, team\'s and opponent\'s own Q1 tendencies (lightly: backtests found them worth ~1%). Range = middle 50% of outcomes. ';
+}
+
+function q1Table(id, rows) {
+  const q1 = buildQ1(sport, model, projector, { history });
+  const data1 = rows.map((x) => ({ ...x, q: q1.project(x.p, x.r) })).filter((x) => Object.keys(x.q).length);
+  const statCols = Object.entries(Q1_STATS).map(([k, def]) => ({
+    id: k, label: def.label, cls: 'l',
+    title: 'Projection · median · likely range (middle 50%). Grey: share of his production that comes in Q1 vs league.',
+    sort: (x) => x.q[k]?.proj ?? -1,
+    bg: (x) => (x.q[k] ? edgeColor((x.q[k].share / x.q[k].league - 1) * 100, 25) : 'transparent'),
+    cell: (x) => {
+      const v = x.q[k];
+      if (!v) return '<span class="muted">–</span>';
+      const d = k === 'q1_rec' ? 2 : 1;
+      const pos0 = (n) => Math.max(0, n);
+      // Receptions are small counts: show P(1+) / P(2+) (the usual 0.5 / 1.5 lines).
+      const detail = k === 'q1_rec'
+        ? `<span class="small muted">1+ ${pctFmt(nbAtLeast(v.proj, 8, 1))} · 2+ ${pctFmt(nbAtLeast(v.proj, 8, 2))}</span>`
+        : `<span class="small muted">med ${pos0(medianOutcome(propDist, k, v.proj)).toFixed(d)}</span>`;
+      const lo = outcomeQuantile(propDist, k, v.proj, 0.25), hi = outcomeQuantile(propDist, k, v.proj, 0.75);
+      const range = lo != null && k !== 'q1_rec' ? ` <span class="rk">${pos0(lo).toFixed(0)}–${pos0(hi).toFixed(0)}</span>` : '';
+      const tip = [`Projection ${v.proj.toFixed(d)} (full game ${x.r.proj[v.full].toFixed(1)} × ${(v.share * 100).toFixed(0)}% Q1 share)`,
+        v.player.share != null ? `His Q1 share: ${(v.player.share * 100).toFixed(0)}% over ${v.player.n} games` : '',
+        v.team.share != null ? `Team Q1 share: ${(v.team.share * 100).toFixed(0)}%` : '',
+        v.defense.share != null ? `${x.r.opp} allows ${(v.defense.share * 100).toFixed(0)}% in Q1` : '',
+        `League: ${(v.league * 100).toFixed(0)}%`].filter(Boolean).join('\n');
+      return `<span title="${esc(tip)}"><strong>${pos0(v.proj).toFixed(d)}</strong> ${detail}${range}</span>`;
+    },
+  }));
+  const cols = [
+    { id: 'name', label: 'Player', cls: 'l', sort: (x) => x.p.name, cell: (x) => `${esc(x.p.name)}${injuryBadge(x.p.id)}` },
+    { id: 'pos', label: 'Pos', cls: 'c', sort: (x) => x.p.pos, cell: (x) => `<span class="pos">${x.p.pos}</span>` },
+    { id: 'game', label: 'Game', cls: 'l', cell: (x) => `${x.p.team} <span class="vs">${x.r.isHome ? 'vs' : '@'}</span> ${x.r.opp}` },
+    ...statCols,
+  ];
+  const sortBy = { QB: 'q1_pass_yds', RB: 'q1_rush_yds' }[state.pos] ?? 'q1_rec_yds';
+  return table(id, cols, data1, { col: sortBy, asc: false });
 }
 
 // ------------------------------------------------------------ props ----
