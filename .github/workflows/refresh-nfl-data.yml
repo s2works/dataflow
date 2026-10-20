@@ -35,6 +35,7 @@ jobs:
           PROPS_MIN_HOURS: ${{ vars.PROPS_MIN_HOURS || '12' }}
       - run: node tools/fit_prop_dist.mjs
       - run: node tools/fit_boom_bust.mjs
+      - run: node tools/fit_game_model.mjs
       - name: Commit updated data
         run: |
           if [ -z "$(git status --porcelain -- web/data)" ]; then

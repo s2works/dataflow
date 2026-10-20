@@ -108,6 +108,35 @@ strengths and made predictions worse or no better, so they're context only
 fair odds. Honest caveat: this barely beats a coin flip in backtests, so
 projections are shrunk hard toward a league-typical 1.5.
 
+### Game projections (score, spread, total, win %)
+
+Each game page opens with **model vs Vegas**: projected score, spread, total
+and win probability, plus the model's lean and its track record at that size
+of disagreement. Week cards show a one-line model projection and Team
+Rankings has a **Power** column (points better than average on a neutral
+field).
+
+* Model: opponent-adjusted offense/defense ratings from points scored/allowed,
+  blended 50/50 with the same fit on offensive **EPA per play** (from
+  play-by-play), ridge-regularized toward average, last season counted at 25%
+  weight, home field from the data. Win % = normal on the margin (SD 14,
+  fitted).
+* **Honest backtest** (`node tools/fit_game_model.mjs`, 301 games, 2025–26,
+  each projected only from earlier games), against the closing lines nflverse
+  records:
+
+  | | Model | Vegas |
+  | --- | --- | --- |
+  | Avg miss, margin | 10.1 | 9.7 |
+  | Avg miss, total | 10.6 | 10.2 |
+  | Win % log loss | 0.650 | 0.628 |
+
+  When the model disagrees with the spread by 3+ points it went 57-56 ATS
+  (50%); totals 46-46. Break-even at −110 is 52.4%. Closing lines are the
+  sharpest numbers in betting, so this is a second opinion, not an edge.
+  Opening lines are softer, and line snapshots are now being recorded, so this
+  can be re-tested against openers once a few weeks are collected.
+
 ### First-quarter projections
 
 **Projections → 1st quarter**: 1Q passing yards, rushing yards, receptions and
@@ -250,9 +279,11 @@ web/js/props.js           prop odds math, P(over a line)
 web/js/boombust.js        boom/bust angles and probabilities
 web/js/firsttd.js         first-TD probabilities
 web/js/q1.js              first-quarter projections
+web/js/gamemodel.js       game projections (ratings, spread, total, win %)
 web/js/sports/nfl.js      NFL stats, positions, projection weights, stadiums
 tools/backtest.mjs        projection accuracy check
 tools/fit_prop_dist.mjs   prop outcome distributions (refit by the refresh job)
 tools/fit_boom_bust.mjs   boom/bust calibration + angle records (refit by the refresh job)
+tools/fit_game_model.mjs  game model record vs results and Vegas (refit by the refresh job)
 web/data/nfl/             generated JSON (committed)
 ```

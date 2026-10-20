@@ -43,6 +43,7 @@ PBP_COLS = [
     "rusher_player_id", "receiver_player_id", "rush_touchdown", "pass_touchdown",
     "play_id", "qtr", "touchdown", "td_team", "td_player_id",
     "passer_player_id", "passing_yards", "receiving_yards", "rushing_yards", "complete_pass",
+    "posteam", "play_type", "epa",
 ]
 
 # Player props from The Odds API (https://the-odds-api.com). Optional: only runs
@@ -377,7 +378,7 @@ def write_if_changed(path: Path, text: str) -> bool:
     return True
 
 
-def build_red_zone(season: int) -> tuple[pd.DataFrame | None, dict | None]:
+def build_red_zone(season: int) -> tuple[pd.DataFrame | None, dict | None, pd.DataFrame | None]:
     """Per player-game red-zone usage from play-by-play, plus league TD rates.
 
     car_gl  carries inside the 5      car_rz  carries at the 6-20
@@ -392,7 +393,7 @@ def build_red_zone(season: int) -> tuple[pd.DataFrame | None, dict | None]:
         raw = fetch(PBP_URL.format(season=season), f"pbp_{season}.csv.gz", CACHE_HOURS)
     except Exception as exc:  # noqa: BLE001
         print(f"  no play-by-play for {season}: {exc}")
-        return None, None
+        return None, None, None
     pbp = pd.read_csv(io.BytesIO(raw), compression="gzip", usecols=PBP_COLS, low_memory=False)
     pbp = pbp[pbp["season_type"].isin(["REG", "POST"]) & (pbp["two_point_attempt"] != 1)]
 
@@ -443,7 +444,13 @@ def build_red_zone(season: int) -> tuple[pd.DataFrame | None, dict | None]:
     first.index.names = ["game_id", "player_id"]
 
     rz = car.join(tgt, how="outer").join(q1, how="outer").join(first, how="outer").fillna(0).astype(int).reset_index()
-    return rz, td_rates
+
+    # Team offensive EPA on dropbacks and runs (game-strength signal for the game model).
+    plays = pbp[pbp["play_type"].isin(["pass", "run"]) & pbp["epa"].notna() & pbp["posteam"].notna()]
+    epa = plays.groupby(["game_id", "posteam"]).agg(epa=("epa", "sum"), plays=("epa", "size")).reset_index()
+    epa = epa.rename(columns={"posteam": "team"})
+    epa["epa"] = epa["epa"].round(2)
+    return rz, td_rates, epa
 
 
 def build_season(season: int, games: pd.DataFrame) -> dict | None:
@@ -459,13 +466,15 @@ def build_season(season: int, games: pd.DataFrame) -> dict | None:
     num_cols = list(set(TEAM_COLS) | set(POS_COLS))
     stats[num_cols] = stats[num_cols].fillna(0)
 
-    rz, td_rates = build_red_zone(season)
+    rz, td_rates, epa = build_red_zone(season)
     if rz is not None:
         stats = stats.merge(rz, on=["game_id", "player_id"], how="left")
         stats[RZ_COLS] = stats[RZ_COLS].fillna(0)
 
     schedule = build_schedule(games, season)
     team_games = build_team_games(stats, schedule)
+    if epa is not None:
+        team_games = team_games.merge(epa, on=["game_id", "team"], how="left")
     pos_games = build_position_games(stats)
     players, player_games = build_player_games(stats)
 

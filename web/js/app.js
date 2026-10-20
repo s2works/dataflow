@@ -3,6 +3,7 @@ import { buildModel, edgeColor, rankColor, ordinal } from './engine.js';
 import { buildProjector, fetchForecasts, weatherLabel } from './projections.js';
 import { overProb, fairOver, impliedProb, poissonAtLeast, medianOutcome, outcomeQuantile, nbAtLeast } from './props.js';
 import { buildQ1, Q1_STATS } from './q1.js';
+import { buildGameModel } from './gamemodel.js';
 import { ANGLES, anglesFor, boomBust, angleEffect } from './boombust.js';
 import { buildFirstTd } from './firsttd.js';
 
@@ -44,6 +45,8 @@ const WEATHER_MS = 60 * 60e3; // how often to refetch forecasts
 let indexUpdated = {};
 let propDist = null; // outcome distributions for P(over a line)
 let boomFit = null; // boom/bust distributions, calibration and angle records
+let gameRecord = null; // game model backtest vs results and Vegas
+let gameModel = null;
 let lastCheck = null;
 let forecastsAt = 0;
 
@@ -54,6 +57,7 @@ async function boot() {
   lastCheck = new Date();
   propDist = (await fetchJSON(`${sport.dataPath}/prop_dist.json`).catch(() => null))?.stats ?? null;
   boomFit = await fetchJSON(`${sport.dataPath}/boombust.json`).catch(() => null);
+  gameRecord = await fetchJSON(`${sport.dataPath}/game_record.json`).catch(() => null);
   const seasonSel = $('#season');
   seasonSel.innerHTML = index.seasons.map((s) => `<option>${s}</option>`).join('');
   state.season = index.seasons[0];
@@ -140,6 +144,7 @@ async function loadSeason(season, { keepWeek = false } = {}) {
 function recompute() {
   model = buildModel(sport, data, { beforeWeek: state.week, lastN: state.lastN });
   projector = buildProjector(sport, model, { history, weather: forecasts });
+  gameModel = buildGameModel(sport, data, { beforeWeek: state.week, history });
   render();
   // Pull live forecasts for this week's outdoor games, then re-project.
   const pending = weekGames().filter((g) => !forecasts.has(g.game_id));
@@ -343,11 +348,56 @@ function viewWeek() {
       <div class="teams"><span>${g.away}</span><span class="vs">@</span><span>${g.home}</span></div>
       <div class="when">${esc(gameLine(g))}</div>
       <div class="when">${esc(weatherLabel(projector.gameWeather(g)))}</div>
+      <div class="when model-line" title="Our model, from opponent-adjusted points and EPA ratings. Vegas is more accurate on average; see the game page for the record.">${modelLine(g)}</div>
       <div class="chips">${chips.join('') || '<span class="muted">No large edges.</span>'}</div>
     </div>`;
   });
   return `<div class="toolbar"><strong>Biggest offensive edges by game</strong><span class="muted">— offense rank vs opponent defense rank; edge ≥ 10 spots. ${sampleNote()}</span></div>
     <div class="grid games">${cards.join('')}</div>`;
+}
+
+// ------------------------------------------------------ game model ----
+const fmtSpread = (g, margin) => (Math.abs(margin) < 0.25 ? 'PK' : `${margin > 0 ? g.home : g.away} -${Math.abs(margin).toFixed(1)}`);
+
+function modelLine(g) {
+  const p = gameModel.predict(g);
+  const fav = p.pHome >= 0.5 ? g.home : g.away;
+  return `Model: ${fmtSpread(g, p.margin)} · total ${p.total.toFixed(1)} · ${fav} ${pctFmt(Math.max(p.pHome, 1 - p.pHome))}`;
+}
+
+// Record when the model disagrees with Vegas by at least `diff` points.
+function recordAt(kind, diff) {
+  const rec = gameRecord?.[kind];
+  if (!rec) return null;
+  const th = Object.keys(rec).map(Number).filter((t) => t <= Math.abs(diff)).sort((a, b) => b - a)[0] ?? 0;
+  const [w, l] = rec[th];
+  return { th, w, l, pct: w + l ? w / (w + l) : null };
+}
+
+function gameProjectionCard(g) {
+  const p = gameModel.predict(g);
+  const hasLine = g.spread_line != null && g.total_line != null;
+  const vegasHome = hasLine ? (g.total_line + g.spread_line) / 2 : null;
+  const vegasAway = hasLine ? (g.total_line - g.spread_line) / 2 : null;
+  const mkt = g.home_moneyline != null && g.away_moneyline != null ? fairOver(g.home_moneyline, g.away_moneyline) : null;
+  const sDiff = hasLine ? p.margin - g.spread_line : null; // + = model likes home more
+  const tDiff = hasLine ? p.total - g.total_line : null;
+  const ats = sDiff != null ? recordAt('ats', sDiff) : null;
+  const ou = tDiff != null ? recordAt('ou', tDiff) : null;
+  const recTxt = (r) => (r?.pct != null ? `model went ${r.w}-${r.l} (${pctFmt(r.pct)}) when off by ${r.th}+` : '');
+  const lean = (diff, a, b, r) => (diff == null || Math.abs(diff) < 1 ? '<span class="muted">agrees with Vegas</span>'
+    : `<strong>${diff > 0 ? a : b}</strong> by ${Math.abs(diff).toFixed(1)} <span class="rk">${recTxt(r)}</span>`);
+  const played = g.home_score != null ? `<tr><td class="l">Final</td><td colspan="3" class="l">${g.away} ${g.away_score} – ${g.home} ${g.home_score}</td></tr>` : '';
+  const rows = `
+    <tr><th class="l"></th><th>Model</th><th>Vegas</th><th class="l">Model lean</th></tr>
+    <tr><td class="l">Score</td><td>${g.away} ${p.ptsAway.toFixed(1)} – ${g.home} ${p.ptsHome.toFixed(1)}</td><td>${hasLine ? `${g.away} ${vegasAway.toFixed(1)} – ${g.home} ${vegasHome.toFixed(1)}` : '–'}</td><td class="l muted">Vegas score = implied by spread + total</td></tr>
+    <tr><td class="l">Spread</td><td>${fmtSpread(g, p.margin)}</td><td>${hasLine ? spreadText(g, g.spread_line) : '–'}</td><td class="l">${lean(sDiff, `${g.home} side`, `${g.away} side`, ats)}</td></tr>
+    <tr><td class="l">Total</td><td>${p.total.toFixed(1)}</td><td>${g.total_line ?? '–'}</td><td class="l">${lean(tDiff, 'Over', 'Under', ou)}</td></tr>
+    <tr><td class="l">Win %</td><td>${g.home} ${pctFmt(p.pHome)}</td><td>${mkt != null ? `${g.home} ${pctFmt(mkt)}` : '–'}</td><td class="l muted">Vegas = moneyline with the vig removed</td></tr>
+    ${played}`;
+  const r = gameRecord;
+  const note = r ? `Backtest (${r.games} games, 2025–26): the model's average miss is ${r.err.margin.model.toFixed(1)} pts on the margin and ${r.err.total.model.toFixed(1)} on the total, vs Vegas ${r.err.margin.vegas.toFixed(1)} / ${r.err.total.vegas.toFixed(1)}. Against the spread it's ~50% even when it disagrees, so treat it as a second opinion: Vegas closing lines are hard to beat. Break-even at −110 is 52.4%.` : '';
+  return `<div class="tbl-wrap"><table>${rows}</table></div><p class="muted small">${note}</p>`;
 }
 
 function matchupTable(id, rowsA, rowsB, a, b) {
@@ -382,6 +432,7 @@ function viewGame() {
   return `<button class="back">← All games</button>
     <div class="matchup-head"><h2>${esc(teamName(a))} @ ${esc(teamName(h))}</h2><span class="muted">${esc(gameLine(g))}</span><span class="muted">${esc(weatherLabel(projector.gameWeather(g)))}</span></div>
     <div class="stack">
+      <div class="card"><h3>Game projection</h3>${gameProjectionCard(g)}</div>
       <div class="card"><h3>Team matchup</h3>
         <p class="muted" style="margin:0 0 8px">Values per game with league rank. Offense rank 1 = most productive; defense rank 1 = stingiest. Edge = defense rank − offense rank (positive = offense advantage). ${sampleNote()}</p>
         ${matchupTable('team', sideEdges(a, h), sideEdges(h, a), a, h)}
@@ -1053,6 +1104,11 @@ function viewRankings() {
     {
       id: 'opp', label: 'Next', cls: 'l', sort: (r) => opps.get(r.t)?.opp,
       cell: (r) => { const o = opps.get(r.t); return o ? `<a href="#matchups/${o.game.game_id}">${o.home ? 'vs' : '@'} ${o.opp}</a>` : '<span class="muted">bye</span>'; },
+    },
+    {
+      id: 'power', label: 'Power', title: 'Model net rating: points better than an average team on a neutral field (offense + defense, opponent-adjusted)',
+      sort: (r) => gameModel.rating(r.t).net, bg: (r) => edgeColor(gameModel.rating(r.t).net, 8),
+      cell: (r) => { const x = gameModel.rating(r.t); return `<strong>${x.net >= 0 ? '+' : ''}${x.net.toFixed(1)}</strong> <span class="rk">${side === 'off' ? 'off' : 'def'} ${(side === 'off' ? x.off : x.def) >= 0 ? '+' : ''}${(side === 'off' ? x.off : x.def).toFixed(1)}</span>`; },
     },
     ...sport.teamStats.map((s) => ({
       id: s.id, label: s.label.replace(' / G', '/G'), title: s.note,

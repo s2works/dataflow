@@ -151,6 +151,9 @@ export default {
     firstTd: { power: 0.7, apply: [], kEarly: 15, kHistory: 8, kDefense: 25, dstRate: 0.1, scale: 1 },
     // First-quarter share tilts: regression pseudo-games (backtest-tuned).
     q1: { kPlayer: 30, kTeam: 30, kDefense: 30 },
+    // Game model: ridge = pseudo-games pulling ratings to average, priorWeight =
+    // weight of last season's games, SDs of margin/total around projections.
+    game: { ridge: 6, priorWeight: 0.25, epaWeight: 0.5, epaScale: 0.7, marginSd: 14, totalSd: 13 },
     totalClamp: [0.6, 1.6],
   },
 
