@@ -117,6 +117,29 @@ the anytime-TD price too, and game pages get a props card.
   small free allowance, 12 for twice a day on a paid plan). The job stops
   when credits run low.
 
+### Boom / Bust tab
+
+**Boom** = at least 1.5× the player's average (and at least QB 22 / RB 16 /
+WR 16 / TE 12 PPR); **bust** = half his average or less. Each player gets a
+calibrated P(boom) and P(bust) next to the normal rate for his position, plus
+**angles**: specific setups like *receiving back vs a defense that allows lots
+of RB catches in a high-total game*.
+
+Every angle is backtested (`tools/fit_boom_bust.mjs`, refit each refresh) and
+labeled by what it **actually** did, not what it was meant to do:
+
+| Angle | Effect | Boom | Bust | Games |
+| --- | --- | --- | --- | --- |
+| Receiving back vs soft coverage (2.5+ tgt/G, top-8 RB catches allowed, total 45.5+) | Boom | 19% vs 13% | 12% vs 26% | 59 |
+| Teammates out (usage bump ≥ 10%) | Boom | 20% vs 15% | 24% vs 28% | 304 |
+| Shootout / goal-line role / target hog vs soft WR D / TE vs soft TE D | Safe floor | ≈ normal | 14–19% vs 23–29% | 54–209 |
+| Bad weather (wind 15+, rain, snow) | Bust risk | 7% vs 15% | 38% vs 25% | 169 |
+| Backup QB | Bust risk | 9% vs 15% | 32% vs 27% | 85 |
+
+Angles with no real effect (low totals, toughest defenses, workhorse favorites,
+early-down underdog backs) are tracked but hidden. New angles go in
+`web/js/boombust.js`; the fit script reports their record.
+
 ### Injuries & line movement
 
 Each game page has an **Injury report** card (status, injury, the player's
@@ -191,7 +214,11 @@ web/styles.css
 web/js/app.js             views / UI
 web/js/engine.js          ranks, edges, player matchup math
 web/js/projections.js     player projection + touchdown model, weather forecasts
+web/js/props.js           prop odds math, P(over a line)
+web/js/boombust.js        boom/bust angles and probabilities
 web/js/sports/nfl.js      NFL stats, positions, projection weights, stadiums
 tools/backtest.mjs        projection accuracy check
+tools/fit_prop_dist.mjs   prop outcome distributions (refit by the refresh job)
+tools/fit_boom_bust.mjs   boom/bust calibration + angle records (refit by the refresh job)
 web/data/nfl/             generated JSON (committed)
 ```

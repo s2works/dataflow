@@ -34,6 +34,7 @@ jobs:
           # Hours before a game's props are re-pulled (each pull costs credits).
           PROPS_MIN_HOURS: ${{ vars.PROPS_MIN_HOURS || '12' }}
       - run: node tools/fit_prop_dist.mjs
+      - run: node tools/fit_boom_bust.mjs
       - name: Commit updated data
         run: |
           if [ -z "$(git status --porcelain -- web/data)" ]; then

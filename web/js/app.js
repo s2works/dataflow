@@ -2,6 +2,9 @@ import nfl from './sports/nfl.js';
 import { buildModel, edgeColor, rankColor, ordinal } from './engine.js';
 import { buildProjector, fetchForecasts, weatherLabel } from './projections.js';
 import { overProb, fairOver, impliedProb, poissonAtLeast, medianOutcome } from './props.js';
+import { ANGLES, anglesFor, boomBust, angleEffect } from './boombust.js';
+
+const ANGLE_LABELS = Object.fromEntries(ANGLES.map((a) => [a.id, a.label]));
 
 const SPORTS = { nfl };
 const sport = SPORTS.nfl;
@@ -38,6 +41,7 @@ const REFRESH_MS = 5 * 60e3; // how often to check for new data
 const WEATHER_MS = 60 * 60e3; // how often to refetch forecasts
 let indexUpdated = {};
 let propDist = null; // outcome distributions for P(over a line)
+let boomFit = null; // boom/bust distributions, calibration and angle records
 let lastCheck = null;
 let forecastsAt = 0;
 
@@ -47,6 +51,7 @@ async function boot() {
   indexUpdated = index.updated ?? {};
   lastCheck = new Date();
   propDist = (await fetchJSON(`${sport.dataPath}/prop_dist.json`).catch(() => null))?.stats ?? null;
+  boomFit = await fetchJSON(`${sport.dataPath}/boombust.json`).catch(() => null);
   const seasonSel = $('#season');
   seasonSel.innerHTML = index.seasons.map((s) => `<option>${s}</option>`).join('');
   state.season = index.seasons[0];
@@ -147,7 +152,7 @@ function recompute() {
 
 function readHash(doRender = true) {
   const [tab, game] = location.hash.replace(/^#/, '').split('/');
-  state.tab = ['matchups', 'players', 'proj', 'td', 'dvp', 'rankings'].includes(tab) ? tab : 'matchups';
+  state.tab = ['matchups', 'players', 'proj', 'td', 'boom', 'dvp', 'rankings'].includes(tab) ? tab : 'matchups';
   state.game = state.tab === 'matchups' && game ? game : null;
   if (!doRender || !model) return;
   // Opening a game from another week re-ranks using games before that week.
@@ -166,7 +171,7 @@ function render() {
     view.innerHTML = `<div class="card">No games played before this week yet — pick a later week or the previous season.</div>`;
     return;
   }
-  const views = { matchups: state.game ? viewGame : viewWeek, players: viewPlayers, proj: viewProjections, td: viewTouchdowns, dvp: viewDvp, rankings: viewRankings };
+  const views = { matchups: state.game ? viewGame : viewWeek, players: viewPlayers, proj: viewProjections, td: viewTouchdowns, boom: viewBoomBust, dvp: viewDvp, rankings: viewRankings };
   view.innerHTML = views[state.tab]();
   wire(view);
 }
@@ -815,6 +820,86 @@ function viewTouchdowns() {
         : 'Passing TDs are hard to predict: backtests show only a small edge over a coin flip, so numbers are shrunk hard toward average. Treat as a lean, not a lock.'} ${sampleNote()}</span>
     </div>
     <div class="card">${any ? tdTable('td', rows) : qbTdTable('qbtd', rows)}</div>`;
+}
+
+// -------------------------------------------------------- boom / bust ----
+const EFFECT_STYLE = {
+  boom: { label: 'Boom', color: () => `rgba(var(--good-rgb), .45)` },
+  floor: { label: 'Safe floor', color: () => `rgba(var(--good-rgb), .18)` },
+  bust: { label: 'Bust risk', color: () => `rgba(var(--bad-rgb), .4)` },
+};
+
+function boomRows() {
+  return projRows().map(({ p, r }) => {
+    const bb = boomBust(boomFit, p, r);
+    // Only angles with a real backtested effect are shown, labeled by that effect.
+    const angles = anglesFor(p, r, model)
+      .map((a) => ({ ...a, rec: boomFit?.angles?.[a.id], effect: angleEffect(boomFit?.angles?.[a.id]) }))
+      .filter((a) => a.effect);
+    const base = boomFit?.base?.[p.pos] ?? { boom: 0.14, bust: 0.26 };
+    return { p, r, ...bb, base, angles };
+  });
+}
+
+function angleChip(a) {
+  const st = EFFECT_STYLE[a.effect];
+  const rec = a.rec ? `Backtest: ${pctFmt(a.rec.boom)} boom vs ${pctFmt(a.rec.baseBoom)} normal, ${pctFmt(a.rec.bust)} bust vs ${pctFmt(a.rec.baseBust)} (n=${a.rec.n})` : '';
+  const stat = a.effect === 'bust' ? `${pctFmt(a.rec.bust)} bust` : a.effect === 'boom' ? `${pctFmt(a.rec.boom)} boom` : `${pctFmt(a.rec.bust)} bust`;
+  return `<span class="chip" style="background:${st.color()}" title="${esc(`${a.text}\n${rec}`)}"><strong>${esc(a.label)}</strong> · ${esc(a.text)} <span class="rk">${stat} vs ${pctFmt(a.effect === 'boom' ? a.rec.baseBoom : a.rec.baseBust)}</span></span>`;
+}
+
+function boomTable(id, rows, kind) {
+  const isBoom = kind === 'boom';
+  const cols = [
+    { id: 'name', label: 'Player', cls: 'l', sort: (x) => x.p.name, cell: (x) => `${esc(x.p.name)}${injuryBadge(x.p.id)}` },
+    { id: 'pos', label: 'Pos', cls: 'c', sort: (x) => x.p.pos, cell: (x) => `<span class="pos">${x.p.pos}</span>` },
+    { id: 'game', label: 'Game', cls: 'l', cell: (x) => `${x.p.team} <span class="vs">${x.r.isHome ? 'vs' : '@'}</span> ${x.r.opp}` },
+    { id: 'avg', label: 'Avg', title: 'Average PPR points', sort: (x) => x.r.baseFpts, cell: (x) => x.r.baseFpts.toFixed(1) },
+    { id: 'proj', label: 'Proj', sort: (x) => x.r.projFpts, cell: (x) => x.r.projFpts.toFixed(1) },
+    {
+      id: 'boom', label: 'Boom %', title: 'Chance of ≥ 1.5× his average (and at least QB 22 / RB 16 / WR 16 / TE 12). Grey = normal rate for the position.',
+      sort: (x) => x.boom, bg: (x) => (x.boom == null ? 'transparent' : edgeColor((x.boom - x.base.boom) * 100, 12)),
+      cell: (x) => `<strong>${x.boom == null ? '–' : pctFmt(x.boom)}</strong> <span class="rk">${pctFmt(x.base.boom)}</span>`,
+    },
+    {
+      id: 'bust', label: 'Bust %', title: 'Chance of ≤ half his average. Grey = normal rate for the position.',
+      sort: (x) => x.bust, bg: (x) => (x.bust == null ? 'transparent' : edgeColor((x.base.bust - x.bust) * 100, 12)),
+      cell: (x) => `<strong>${x.bust == null ? '–' : pctFmt(x.bust)}</strong> <span class="rk">${pctFmt(x.base.bust)}</span>`,
+    },
+    { id: 'line', label: 'Boom at', title: 'Points needed for a boom / bust week', cell: (x) => `${x.boomAt.toFixed(0)}+ <span class="rk">bust ≤ ${x.bustAt.toFixed(0)}</span>` },
+    { id: 'angles', label: 'Angles', cls: 'l wrap', sort: (x) => x.angles.length, cell: (x) => `<div class="chips">${x.angles.map(angleChip).join('') || '<span class="muted">–</span>'}</div>` },
+  ];
+  return table(id, cols, rows, { col: isBoom ? 'boom' : 'bust', asc: false });
+}
+
+function viewBoomBust() {
+  if (!boomFit) return '<div class="card">Boom/bust model not built yet — run <code>node tools/fit_boom_bust.mjs</code>.</div>';
+  let rows = boomRows();
+  if (state.pos !== 'ALL') rows = rows.filter((x) => x.p.pos === state.pos);
+  const q = state.search.trim().toLowerCase();
+  if (q) rows = rows.filter((x) => x.p.name.toLowerCase().includes(q) || x.p.team.toLowerCase() === q);
+  const boom = rows.filter((x) => x.angles.some((a) => a.effect === 'boom') || x.boom >= x.base.boom + 0.05);
+  const bust = rows.filter((x) => x.angles.some((a) => a.effect === 'bust') || x.bust >= x.base.bust + 0.06);
+  const recs = Object.entries(boomFit.angles ?? {});
+  const legend = recs
+    .map(([id, rec]) => ({ id, rec, effect: angleEffect(rec) }))
+    .filter((a) => a.effect)
+    .map((a) => `<tr><td class="l">${esc(ANGLE_LABELS[a.id] ?? a.id)}</td><td class="l">${EFFECT_STYLE[a.effect].label}</td><td>${pctFmt(a.rec.boom)} <span class="rk">vs ${pctFmt(a.rec.baseBoom)}</span></td><td>${pctFmt(a.rec.bust)} <span class="rk">vs ${pctFmt(a.rec.baseBust)}</span></td><td>${a.rec.n}</td></tr>`)
+    .join('');
+  return `<div class="toolbar">
+      ${seg('pos', [['ALL', 'All'], ...Object.keys(sport.positions).map((p) => [p, p])])}
+      <input id="search" type="search" placeholder="Player or team…" value="${esc(state.search)}">
+      <span class="spacer"></span>
+      <span class="muted">Boom = 1.5× his average or more; bust = half or less. Angles are specific matchup setups, each shown with its backtested record. ${sampleNote()}</span>
+    </div>
+    <div class="stack">
+      <div class="card"><h3>Boom candidates</h3>${boomTable('boom', boom, 'boom')}</div>
+      <div class="card"><h3>Bust risks</h3>${boomTable('bust', bust, 'bust')}</div>
+      <div class="card"><h3>Angle track record (2025 + 2026 backtest)</h3>
+        <div class="tbl-wrap"><table><tr><th class="l">Angle</th><th class="l">What it actually does</th><th>Boom rate</th><th>Bust rate</th><th>Games</th></tr>${legend}</table></div>
+        <p class="muted small">Angles that showed no real effect in backtests (e.g. low game totals, tough defenses, workhorse backs as favorites) are tracked but not shown.</p>
+      </div>
+    </div>`;
 }
 
 function viewDvp() {
