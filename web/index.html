@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Edge Board</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Edge Board <span class="sport-tag" id="sport-tag">NFL</span></div>
+    <nav class="tabs" id="tabs">
+      <a href="#matchups" data-tab="matchups">Matchups</a>
+      <a href="#players" data-tab="players">Player Edges</a>
+      <a href="#dvp" data-tab="dvp">Defense vs Position</a>
+      <a href="#rankings" data-tab="rankings">Team Rankings</a>
+    </nav>
+    <div class="controls">
+      <label>Season <select id="season"></select></label>
+      <label>Week <select id="week"></select></label>
+      <label title="Which games feed the rankings. Only games before the selected week are ever used.">
+        Sample
+        <select id="window">
+          <option value="0">Season to date</option>
+          <option value="5">Last 5 games</option>
+          <option value="3">Last 3 games</option>
+        </select>
+      </label>
+    </div>
+  </header>
+
+  <main id="view"><p class="muted pad">Loading…</p></main>
+
+  <footer class="foot">
+    <span class="legend">
+      <span class="sw" style="background: rgba(var(--bad-rgb), .7)"></span> favors defense
+      <span class="sw" style="background: transparent; border: 1px solid var(--line)"></span> neutral
+      <span class="sw" style="background: rgba(var(--good-rgb), .7)"></span> favors offense / player
+    </span>
+    <span class="muted" id="meta"></span>
+  </footer>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
