@@ -136,6 +136,10 @@ td .chips { min-width: 240px; }
 .linechart .pt:hover circle:last-of-type { r: 5; }
 .grid.two.charts { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-top: 10px; }
 .chip.ctx { color: var(--muted); }
+.gamebar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 12px; }
+.gchip { font: inherit; font-size: 12px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; user-select: none; }
+.gchip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.gchip:hover { border-color: var(--accent); }
 .res { font-weight: 700; padding: 1px 6px; border-radius: 4px; }
 .res-hit { background: rgba(var(--good-rgb), .25); }
 .res-miss { background: rgba(var(--bad-rgb), .22); }

@@ -7,6 +7,7 @@
 import sport from './sports/nhl.js';
 import { buildModel, edgeColor, rankColor, ordinal } from './engine.js';
 import { buildNhlProjector, buildNhlGameModel, goalieSaves } from './nhl/model.js';
+import { gameFilter } from './gamefilter.js';
 import { nhlDayPicks, gradeProp, gradeGame, indexResults, tally, MARKET_LABEL } from './nhl/picks.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -128,12 +129,16 @@ function render() {
   const view = $('#view');
   if (!model.N) { view.innerHTML = '<div class="card">No games played before this date yet: pick a later date or the previous season.</div>'; return; }
   const views = { matchups: state.game ? viewGame : viewDay, edges: viewEdges, props: viewProps, picks: viewPicks, score: viewScore, dvp: viewDvp, rankings: viewRankings };
-  view.innerHTML = views[state.tab]();
+  view.innerHTML = (GAME_FILTER_TABS.includes(state.tab) ? games_.bar() : '') + views[state.tab]();
   wire(view);
 }
 
 // ------------------------------------------------------------ helpers ----
 const dayGames = () => data.schedule.filter((g) => g.week === state.week);
+// Game filter chips on player tabs (gamefilter.js).
+const GAME_FILTER_TABS = ['edges', 'props', 'picks'];
+const games_ = gameFilter(dayGames, () => `${state.season}:${state.week}`);
+const shownGames = () => dayGames().filter((g) => games_.on(g.game_id));
 const teamName = (abbr) => data.teams.find((t) => t.abbr === abbr)?.name ?? abbr;
 const faceoff = (g) => (g.gametime && g.gametime.includes('T') ? new Date(g.gametime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '');
 
@@ -166,6 +171,7 @@ function wire(root) {
     render();
   }));
   root.querySelectorAll('[data-game]').forEach((el) => el.addEventListener('click', () => (location.hash = `matchups/${el.dataset.game}`)));
+  games_.wire(root, render);
   root.querySelectorAll('[data-set]').forEach((el) => el.addEventListener('click', () => {
     const [k, v] = el.dataset.set.split(':');
     state[k] = v;
@@ -315,7 +321,7 @@ function viewEdges() {
   const k = state.edgeMetric;
   const [, mLabel, d] = EDGE_METRICS.find((m) => m[0] === k);
   const scoring = k === 'pts' || k === 'g' || k === 'a';
-  let rows = skaterRows().map((x) => {
+  let rows = skaterRows(shownGames()).map((x) => {
     const s = model.posStat(x.r.opp, x.p.pos, k, 'def');
     // Regressed toward 1 by the opponent's games played (raw early-season
     // numbers swing wildly), same as the projection model.
@@ -397,6 +403,11 @@ const resCell = (res) => (!res ? '<span class="muted">pending</span>'
 const tallyText = (t) => (t.n ? `<strong>${t.hits}-${t.n - t.hits}</strong> (${pct(t.hits / t.n)})` : '<span class="muted">–</span>');
 
 function currentPicks() {
+  // Some games filtered out: re-rank within the games shown.
+  if (games_.active()) {
+    const games = shownGames();
+    return { ...nhlDayPicks(sport, data, history, state.week, { games, ...(state.lastN ? {} : { model }) }), source: 'filtered' };
+  }
   const date = data.days?.[state.week];
   const lock = locked?.days?.[date];
   if (lock) return { ...lock, source: 'locked' };
@@ -430,7 +441,9 @@ function viewPicks() {
   const tOver = tally(pk.over.map((x) => ({ x, res: gradeProp(x, data, idx) })));
   const tUnder = tally(pk.under.map((x) => ({ x, res: gradeProp(x, data, idx) })));
   const games = pk.games.map((x) => ({ x, r: gradeGame(x, data, idx) }));
-  const status = pk.source === 'locked' && Date.now() < new Date(pk.locks_at).getTime()
+  const status = pk.source === 'filtered'
+    ? `<span class="badge alert">Filtered</span> Top picks re-ranked within the ${pk.games.length} game${pk.games.length === 1 ? '' : 's'} selected. The Scorecard grades the full-day list.`
+    : pk.source === 'locked' && Date.now() < new Date(pk.locks_at).getTime()
     ? `<span class="badge alert">Saved</span> Snapshot ${esc(new Date(pk.locked_at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}. Updates with new data until the first puck drop (${esc(new Date(pk.locks_at).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }))}), then locks for the Scorecard.`
     : pk.source === 'locked'
     ? `<span class="badge pick">Locked</span> Saved ${esc(new Date(pk.locked_at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}, before puck drop${pk.partial ? ` (only the ${pk.games.length} games not yet started at that time)` : ''}. These count on the Scorecard.`
@@ -561,7 +574,7 @@ function goaliesTable(games) {
 }
 
 function viewProps() {
-  const games = dayGames();
+  const games = shownGames();
   const skaters = state.propView === 'skaters';
   let rows = skaters ? skaterRows(games) : [];
   if (state.pos !== 'ALL') rows = rows.filter((x) => x.p.pos === state.pos);

@@ -6,6 +6,11 @@ script and one sport config.
 
 ## Sports
 
+On player tabs (NFL: Player Edges, Projections, Touchdowns, Boom / Bust, Top
+Picks; NHL: Player Edges, Player Props, Top Picks) a row of **game chips**
+filters by game: click to hide/show a game, double-click for only that game,
+or All / None. Top Picks re-rank within the selected games.
+
 Switch sport with the **NFL / NHL** toggle next to the logo (remembered per
 browser; `?sport=nhl` links straight to it). The NFL is documented first;
 the NHL section is below.

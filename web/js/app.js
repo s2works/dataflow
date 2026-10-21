@@ -6,6 +6,7 @@ import { buildQ1, Q1_STATS } from './q1.js';
 import { buildGameModel } from './gamemodel.js';
 import { ANGLES, anglesFor, boomBust, angleEffect } from './boombust.js';
 import { buildFirstTd } from './firsttd.js';
+import { gameFilter } from './gamefilter.js';
 import { NFL_MARKETS, projectableRows, nflCandidates, topPicks, nflResults, gradeNflPick, tallyPicks } from './nflpicks.js';
 
 const ANGLE_LABELS = Object.fromEntries(ANGLES.map((a) => [a.id, a.label]));
@@ -190,12 +191,17 @@ function render() {
     return;
   }
   const views = { matchups: state.game ? viewGame : viewWeek, players: viewPlayers, proj: viewProjections, td: viewTouchdowns, boom: viewBoomBust, picks: viewPicks, score: viewScore, dvp: viewDvp, rankings: viewRankings };
-  view.innerHTML = views[state.tab]();
+  view.innerHTML = (GAME_FILTER_TABS.includes(state.tab) ? games_.bar() : '') + views[state.tab]();
   wire(view);
 }
 
 // ---------------------------------------------------------- helpers ----
 const weekGames = () => data.schedule.filter((g) => g.week === state.week);
+
+// Game filter chips on player tabs (gamefilter.js).
+const GAME_FILTER_TABS = ['players', 'proj', 'td', 'boom', 'picks'];
+const games_ = gameFilter(weekGames, () => `${state.season}:${state.week}`);
+const gameOn = games_.on, teamOn = games_.teamOn;
 const teamName = (abbr) => data.teams.find((t) => t.abbr === abbr)?.name ?? abbr;
 
 function opponentMap() {
@@ -307,6 +313,7 @@ function wire(root) {
     }),
   );
   root.querySelectorAll('[data-game]').forEach((el) => el.addEventListener('click', () => (location.hash = `matchups/${el.dataset.game}`)));
+  games_.wire(root, render);
   root.querySelectorAll('[data-set]').forEach((el) =>
     el.addEventListener('click', () => {
       const [k, v] = el.dataset.set.split(':');
@@ -623,7 +630,7 @@ function playersTable(id, rows) {
 }
 
 function viewPlayers() {
-  let rows = playerRows();
+  let rows = playerRows().filter((p) => teamOn(p.team));
   if (!state.showAll) rows = rows.filter((p) => p.relevant);
   if (state.pos !== 'ALL') rows = rows.filter((p) => p.pos === state.pos);
   const q = state.search.trim().toLowerCase();
@@ -734,7 +741,7 @@ function projTable(id, rows) {
 }
 
 function viewProjections() {
-  let rows = projRows();
+  let rows = projRows().filter((x) => teamOn(x.p.team));
   const props = state.projView === 'props';
   if (state.pos !== 'ALL') rows = rows.filter((x) => x.p.pos === state.pos);
   const q = state.search.trim().toLowerCase();
@@ -953,11 +960,11 @@ const fmtMl = (v) => (v == null ? '–' : v > 0 ? `+${v}` : `${v}`);
 // (what the Scorecard grades); any other game is computed live here.
 function weekPicks() {
   const saved = savedPicks?.weeks?.[state.week]?.games ?? {};
-  const liveGames = weekGames().filter((g) => !saved[g.game_id]);
+  const liveGames = weekGames().filter((g) => !saved[g.game_id] && gameOn(g.game_id));
   const live = liveGames.length ? nflCandidates(sport, projectableRows(sport, model, projector, liveGames), propDist, data.props ?? {}) : [];
   const now = Date.now();
   const cands = [
-    ...Object.values(saved).flatMap((g) => g.candidates.map((x) => ({ ...x, status: now >= new Date(g.kickoff).getTime() ? 'locked' : 'saved' }))),
+    ...Object.entries(saved).filter(([id]) => gameOn(id)).flatMap(([, g]) => g.candidates.map((x) => ({ ...x, status: now >= new Date(g.kickoff).getTime() ? 'locked' : 'saved' }))),
     ...live.map((x) => ({ ...x, status: 'live' })),
   ];
   return { ...topPicks(cands), nSaved: Object.keys(saved).length, nLive: liveGames.length };
@@ -1003,7 +1010,7 @@ function viewPicks() {
   const lineNote = vegas
     ? `<strong>${vegas} of 40</strong> picks are against Vegas lines (consensus of US books, vig removed); the rest use estimated lines where no Vegas prop was pulled.`
     : '<strong>No Vegas prop lines yet</strong>, so every line is estimated from the player\'s own average. Add the free Odds API key to the refresh job (README: “Player props vs projection → Setup”) and these switch to real Vegas lines automatically.';
-  return `<div class="toolbar"><strong>Week ${state.week} top picks</strong><span class="muted">${pk.nSaved ? `${pk.nSaved} games saved before kickoff (these count on the Scorecard)${pk.nLive ? `, ${pk.nLive} computed live` : ''}.` : 'Computed live (this week was before the scorecard started).'} ${sampleNote()}</span></div>
+  return `<div class="toolbar"><strong>Week ${state.week} top picks</strong><span class="muted">${games_.active() ? '<span class="badge alert">Filtered</span> Ranked within the selected games only (the Scorecard grades the full-week list). ' : ''}${pk.nSaved ? `${pk.nSaved} games saved before kickoff (these count on the Scorecard)${pk.nLive ? `, ${pk.nLive} computed live` : ''}.` : 'Computed live (this week was before the scorecard started).'} ${sampleNote()}</span></div>
     <div class="card upset-summary">Top 20 overs: ${wl(tO)} · Top 20 unders: ${wl(tU)}
       <div class="small muted">${lineNote} Edge = the model's chance minus the book's. To beat −110 juice a side needs 52.4%+. Ranked across all props: yards, receptions, pass TDs, and anytime TD when a book prices it.</div></div>
     <div class="stack">
@@ -1130,7 +1137,7 @@ function qbTdTable(id, rows) {
 }
 
 function viewTouchdowns() {
-  let rows = projRows();
+  let rows = projRows().filter((x) => teamOn(x.p.team));
   const q = state.search.trim().toLowerCase();
   if (q) rows = rows.filter((x) => x.p.name.toLowerCase().includes(q) || x.p.team.toLowerCase() === q);
   if (state.tdView === 'first') return viewFirstTd(q);
@@ -1200,7 +1207,7 @@ function boomTable(id, rows, kind) {
 
 function viewBoomBust() {
   if (!boomFit) return '<div class="card">Boom/bust model not built yet — run <code>node tools/fit_boom_bust.mjs</code>.</div>';
-  let rows = boomRows();
+  let rows = boomRows().filter((x) => teamOn(x.p.team));
   if (state.pos !== 'ALL') rows = rows.filter((x) => x.p.pos === state.pos);
   const q = state.search.trim().toLowerCase();
   if (q) rows = rows.filter((x) => x.p.name.toLowerCase().includes(q) || x.p.team.toLowerCase() === q);
@@ -1269,7 +1276,7 @@ function firstTdTable(id, rows, limit = 0) {
 }
 
 function viewFirstTd(q) {
-  let rows = firstTdRows(weekGames());
+  let rows = firstTdRows(weekGames().filter((g) => gameOn(g.game_id)));
   if (state.pos !== 'ALL') rows = rows.filter((x) => x.p.pos === state.pos);
   if (q) rows = rows.filter((x) => x.p.name.toLowerCase().includes(q) || x.p.team.toLowerCase() === q);
   rows = rows.filter((x) => x.gameFirst >= 0.005);
