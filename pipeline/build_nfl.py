@@ -334,10 +334,12 @@ def update_props(season: int, schedule: pd.DataFrame, players: list[dict]) -> di
     ids = {(p["team"], norm_name(p["name"])): p["id"] for p in players}
 
     try:
-        events, _ = odds_get("/events")  # listing events costs no credits
+        events, headers = odds_get("/events")  # listing events costs no credits
     except Exception as exc:  # noqa: BLE001
         print(f"  props: could not list events: {exc}")
         return store
+    left = headers.get("x-requests-remaining", headers.get("X-Requests-Remaining"))
+    print(f"  props: Odds API key OK, {len(events)} events listed, {left} credits left")
     remaining = None
     for ev in events:
         g = by_teams.get((name_to_team.get(ev["away_team"]), name_to_team.get(ev["home_team"])))
