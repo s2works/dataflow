@@ -39,6 +39,8 @@ jobs:
       - run: node tools/fit_game_model.mjs
       - run: python pipeline/build_nhl.py
       - run: node tools/nhl_backtest.mjs --fit
+      # Lock the next game days' NHL picks until puck drop (live scorecard).
+      - run: node tools/nhl_picks.mjs
       - name: Commit updated data
         run: |
           if [ -z "$(git status --porcelain -- web/data)" ]; then

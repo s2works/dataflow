@@ -18,6 +18,7 @@ const { default: sport } = await load('js/sports/nhl.js');
 const { buildModel } = await load('js/engine.js');
 const { buildNhlProjector, buildNhlGameModel, goalieSaves } = await load('js/nhl/model.js');
 const { nbAtLeast } = await load('js/props.js');
+const { nhlDayPicks, gradeProp, indexResults, tally } = await load('js/nhl/picks.js');
 
 const FIT = process.argv.includes('--fit');
 const read = (s) => {
@@ -149,12 +150,35 @@ const dogBuckets = [[0.3, 0.4], [0.4, 0.45], [0.45, 0.5]].map(([lo, hi]) => {
 });
 for (const b of dogBuckets) console.log(`  underdogs at ${b.lo * 100}–${b.hi * 100}%: n=${b.n} expected ${(b.predicted * 100).toFixed(1)}% won ${(b.won * 100).toFixed(1)}%`);
 
+// ---- daily top 20 overs / unders (same method as the Top Picks tab) -----------
+const pickRows = { over: [], under: [] };
+const pickMk = {};
+const idxBySeason = new Map();
+for (const day of days) {
+  if (!idxBySeason.has(day.season)) idxBySeason.set(day.season, indexResults(day.data));
+  const pk = nhlDayPicks(sport, day.data, day.history, day.d, { games: day.games, model: day.model });
+  for (const side of ['over', 'under']) for (const x of pk[side]) {
+    const row = { x, res: gradeProp(x, day.data, idxBySeason.get(day.season)) };
+    pickRows[side].push(row);
+    (pickMk[`${side}:${x.market}`] ??= []).push(row);
+  }
+}
+const pickTally = Object.fromEntries(Object.entries(pickRows).map(([k, v]) => [k, tally(v)]));
+const pickMarkets = Object.fromEntries(Object.entries(pickMk).sort().map(([k, v]) => [k, tally(v)]));
+const totalHit = gameRows.filter((x) => (x.p.pOver55 >= 0.5) === (x.total > 5.5)).length / gameRows.length;
+const pf = (t) => `${t.hits}/${t.n} = ${((100 * t.hits) / t.n).toFixed(1)}% (model expected ${((100 * t.exp) / t.n).toFixed(1)}%, his average alone ${((100 * t.expBase) / t.n).toFixed(1)}%; ${t.void} void)`;
+console.log('\nTop 20 picks per day');
+for (const [k, t] of Object.entries(pickTally)) console.log(`  ${k.padEnd(6)} ${pf(t)}`);
+for (const [k, t] of Object.entries(pickMarkets)) console.log(`    ${k.padEnd(12)} ${pf(t)}`);
+console.log(`  game winner ${((1 - favLost) * 100).toFixed(1)}%, total 5.5 side ${(totalHit * 100).toFixed(1)}%`);
+
 if (FIT) {
   const out = path.join(WEB, 'data', 'nhl', 'nhl_record.json');
   const body = {
     skaterGames: full.length, calib, bestR,
     games: { n: gameRows.length, winLL, naiveLL, homeRate, totMae, totNaive, favLost, dogBuckets },
     goalies: { starterRight: gRight / gTot, savesMae: gAbs / gN, naiveMae: gAbsNaive / gN },
+    picks: { days: days.length, ...pickTally, markets: pickMarkets, winner: 1 - favLost, total: totalHit },
   };
   const old = fs.existsSync(out) ? JSON.parse(fs.readFileSync(out)) : null;
   const strip = (o) => JSON.stringify({ ...o, fitted_at: undefined });

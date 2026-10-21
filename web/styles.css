@@ -136,6 +136,9 @@ td .chips { min-width: 240px; }
 .linechart .pt:hover circle:last-of-type { r: 5; }
 .grid.two.charts { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-top: 10px; }
 .chip.ctx { color: var(--muted); }
+.res { font-weight: 700; padding: 1px 6px; border-radius: 4px; }
+.res-hit { background: rgba(var(--good-rgb), .25); }
+.res-miss { background: rgba(var(--bad-rgb), .22); }
 .back { cursor: pointer; color: var(--accent); background: none; border: 0; font: inherit; padding: 0; margin-bottom: 10px; }
 .matchup-head { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: baseline; margin-bottom: 12px; }
 .matchup-head h2 { margin: 0; font-size: 20px; }

@@ -1,10 +1,13 @@
 // NHL dashboard: Matchups (game previews + upsets), Player Edges, Player Props
-// (skaters and goalies), Defense vs Position, Team Rankings. Shares the ranking engine with
+// (skaters and goalies), Top Picks (daily top 20 overs / unders), Scorecard
+// (live locked picks graded against results, plus the backtest), Defense vs
+// Position, Team Rankings. Shares the ranking engine with
 // the NFL app; models live in nhl/model.js.
 
 import sport from './sports/nhl.js';
 import { buildModel, edgeColor, rankColor, ordinal } from './engine.js';
 import { buildNhlProjector, buildNhlGameModel, goalieSaves } from './nhl/model.js';
+import { nhlDayPicks, gradeProp, gradeGame, indexResults, tally, MARKET_LABEL } from './nhl/picks.js';
 
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
@@ -16,7 +19,7 @@ const POS_NAME = { C: 'centers', W: 'wingers', D: 'defensemen' };
 const REFRESH_MS = 5 * 60e3;
 
 const state = { season: null, week: null, lastN: 0, tab: 'matchups', game: null, pos: 'ALL', search: '', propView: 'skaters', edgeMetric: 'pts', dvpMetric: 'pts', rankSide: 'off', weekSort: 'time', sort: {} };
-let data = null, model = null, projector = null, gameModel = null, history = [], record = null;
+let data = null, model = null, projector = null, gameModel = null, history = [], record = null, locked = null, dayPicks = null;
 let indexUpdated = {}, lastCheck = null;
 const cache = new Map();
 
@@ -28,7 +31,7 @@ async function fetchJSON(url) {
 }
 
 async function boot() {
-  $('#tabs').innerHTML = [['matchups', 'Matchups'], ['edges', 'Player Edges'], ['props', 'Player Props'], ['dvp', 'Defense vs Position'], ['rankings', 'Team Rankings']]
+  $('#tabs').innerHTML = [['matchups', 'Matchups'], ['edges', 'Player Edges'], ['props', 'Player Props'], ['picks', 'Top Picks'], ['score', 'Scorecard'], ['dvp', 'Defense vs Position'], ['rankings', 'Team Rankings']]
     .map(([id, label]) => `<a href="#${id}" data-tab="${id}">${label}</a>`).join('');
   const weekLabel = $('#week').closest('label');
   if (weekLabel?.firstChild) weekLabel.firstChild.textContent = 'Date ';
@@ -57,9 +60,10 @@ async function loadSeason(season, { keepDay = false } = {}) {
   history = [];
   if (!cache.has(season - 1)) cache.set(season - 1, await fetchJSON(`${sport.dataPath}/${season - 1}.json`).catch(() => null));
   if (cache.get(season - 1)) history.push(cache.get(season - 1));
+  locked = await fetchJSON(`${sport.dataPath}/picks/${season}.json`).catch(() => null);
 
   const days = [...new Set(data.schedule.map((g) => g.week))].sort((a, b) => a - b);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = new Date().toLocaleDateString('en-CA'); // local YYYY-MM-DD (game days are local dates)
   const next = data.schedule.find((g) => g.gameday >= today);
   if (!keepDay) state.week = next ? next.week : days[days.length - 1];
   const linked = data.schedule.find((g) => String(g.game_id) === state.game);
@@ -78,6 +82,7 @@ function recompute() {
   model = buildModel(sport, data, { beforeWeek: state.week, lastN: state.lastN });
   projector = buildNhlProjector(sport, model, { history });
   gameModel = buildNhlGameModel(sport, data, { beforeWeek: state.week, history, model });
+  dayPicks = null; // computed on demand by the Top Picks tab
   render();
 }
 
@@ -89,7 +94,11 @@ async function checkForUpdates() {
     indexUpdated = index.updated ?? {};
     for (const s of changed) cache.delete(s);
     if (changed.length) await loadSeason(state.season, { keepDay: true });
-    else renderMeta();
+    else {
+      const fresh = await fetchJSON(`${sport.dataPath}/picks/${state.season}.json`).catch(() => null);
+      if (fresh && JSON.stringify(fresh) !== JSON.stringify(locked)) { locked = fresh; if (['picks', 'score'].includes(state.tab)) render(); }
+      renderMeta();
+    }
   } catch (err) { console.warn('refresh check failed', err); }
 }
 
@@ -107,7 +116,7 @@ function renderMeta() {
 
 function readHash(doRender = true) {
   const [tab, game] = location.hash.replace(/^#/, '').split('/');
-  state.tab = ['matchups', 'edges', 'props', 'dvp', 'rankings'].includes(tab) ? tab : 'matchups';
+  state.tab = ['matchups', 'edges', 'props', 'picks', 'score', 'dvp', 'rankings'].includes(tab) ? tab : 'matchups';
   state.game = state.tab === 'matchups' && game ? game : null;
   if (!doRender || !model) return;
   const g = data.schedule.find((x) => String(x.game_id) === state.game);
@@ -118,7 +127,7 @@ function render() {
   document.querySelectorAll('#tabs a').forEach((a) => a.classList.toggle('on', a.dataset.tab === state.tab));
   const view = $('#view');
   if (!model.N) { view.innerHTML = '<div class="card">No games played before this date yet: pick a later date or the previous season.</div>'; return; }
-  const views = { matchups: state.game ? viewGame : viewDay, edges: viewEdges, props: viewProps, dvp: viewDvp, rankings: viewRankings };
+  const views = { matchups: state.game ? viewGame : viewDay, edges: viewEdges, props: viewProps, picks: viewPicks, score: viewScore, dvp: viewDvp, rankings: viewRankings };
   view.innerHTML = views[state.tab]();
   wire(view);
 }
@@ -378,6 +387,117 @@ function viewEdges() {
       <span class="muted">Every skater playing ${esc(dayLabel(state.week))} vs what tonight's opponent allows to his position. Green = soft matchup. ${sampleNote()}</span>
     </div>
     <div class="card">${table(`edges-${k}`, cols, rows, { col: 'mult', asc: false })}</div>`;
+}
+
+// --------------------------------------------------------- top picks ----
+const pp = (x) => `${(x * 100).toFixed(0)}%`;
+const resCell = (res) => (!res ? '<span class="muted">pending</span>'
+  : res.void ? '<span class="muted" title="Did not play / goalie did not start">void</span>'
+  : `<span class="res ${res.hit ? 'res-hit' : 'res-miss'}">${res.hit ? '✓' : '✗'} ${res.actual}</span>`);
+const tallyText = (t) => (t.n ? `<strong>${t.hits}-${t.n - t.hits}</strong> (${pct(t.hits / t.n)})` : '<span class="muted">–</span>');
+
+function currentPicks() {
+  const date = data.days?.[state.week];
+  const lock = locked?.days?.[date];
+  if (lock) return { ...lock, source: 'locked' };
+  if (!dayPicks) {
+    // Same inputs as the locked picks: season-to-date sample, games before this day.
+    dayPicks = nhlDayPicks(sport, data, history, state.week, state.lastN ? {} : { model });
+  }
+  return { ...dayPicks, source: 'live' };
+}
+
+function picksTable(id, rows, idx) {
+  const cols = [
+    { id: 'rank', label: '#', cell: (x) => x.i + 1 },
+    { id: 'name', label: 'Player', cls: 'l', cell: (x) => `${esc(x.name)} <span class="pos">${x.pos}</span>` },
+    { id: 'game', label: 'Game', cls: 'l', cell: (x) => `${x.team} <span class="vs">${x.home ? 'vs' : '@'}</span> ${x.opp}` },
+    { id: 'prop', label: 'Prop', cls: 'l', cell: (x) => `<strong>${x.side === 'over' ? 'Over' : 'Under'} ${x.line}</strong> ${MARKET_LABEL[x.market]}` },
+    { id: 'proj', label: 'Proj', title: 'Model projection (his average in small print)', cell: (x) => `<strong>${fmt(x.proj, x.market === 'saves' ? 1 : 2)}</strong> <span class="rk">avg ${fmt(x.base, x.market === 'saves' ? 1 : 2)}</span>` },
+    { id: 'p', label: 'Model', title: 'Model chance this side hits (fair odds)', cell: (x) => { const q = x.side === 'over' ? x.p : 1 - x.p; return `<strong>${pp(q)}</strong> <span class="rk">${fairOdds(q)}</span>`; } },
+    { id: 'pb', label: 'His avg', title: 'Chance implied by his average alone at this line', cell: (x) => pp(x.side === 'over' ? x.pBase : 1 - x.pBase) },
+    { id: 'edge', label: 'Edge', title: 'Model chance minus average-only chance', bg: (x) => edgeColor(Math.abs(x.edge) * 100, 15), cell: (x) => `+${(Math.abs(x.edge) * 100).toFixed(0)}` },
+    { id: 'why', label: 'Why', cls: 'l wrap', cell: (x) => `<span class="small muted">${esc((x.why || []).join(' · '))}</span>` },
+    { id: 'res', label: 'Result', cls: 'c', cell: (x) => resCell(gradeProp(x, data, idx)) },
+  ];
+  return table(id, cols, rows.map((x, i) => ({ ...x, i })), null);
+}
+
+function viewPicks() {
+  const pk = currentPicks();
+  const idx = indexResults(data);
+  const date = data.days?.[state.week];
+  const tOver = tally(pk.over.map((x) => ({ x, res: gradeProp(x, data, idx) })));
+  const tUnder = tally(pk.under.map((x) => ({ x, res: gradeProp(x, data, idx) })));
+  const games = pk.games.map((x) => ({ x, r: gradeGame(x, data, idx) }));
+  const status = pk.source === 'locked' && Date.now() < new Date(pk.locks_at).getTime()
+    ? `<span class="badge alert">Saved</span> Snapshot ${esc(new Date(pk.locked_at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}. Updates with new data until the first puck drop (${esc(new Date(pk.locks_at).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }))}), then locks for the Scorecard.`
+    : pk.source === 'locked'
+    ? `<span class="badge pick">Locked</span> Saved ${esc(new Date(pk.locked_at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}, before puck drop${pk.partial ? ` (only the ${pk.games.length} games not yet started at that time)` : ''}. These count on the Scorecard.`
+    : (date && date >= new Date().toISOString().slice(0, 10)
+      ? '<span class="badge alert">Preview</span> Not locked yet: these lock automatically before the first game and can still change until then.'
+      : '<span class="badge alert">Recomputed</span> No locked picks for this day (before the scorecard started), so these are recomputed now from games before this date. Not counted on the live Scorecard.');
+  const gRows = games.map(({ x, r }) => `<tr><td class="l">${x.away} @ ${x.home}</td>
+      <td class="l"><strong>${x.winner}</strong> ${pct(x.pWin)}</td><td>${r ? resCell({ hit: r.hitWin, actual: r.winner }) : resCell(null)}</td>
+      <td class="l"><strong>${x.pOver55 >= 0.5 ? 'Over' : 'Under'} 5.5</strong> ${pct(x.pOver55 >= 0.5 ? x.pOver55 : 1 - x.pOver55)} <span class="rk">proj ${fmt(x.total, 1)}</span></td><td>${r ? resCell({ hit: r.hitTotal, actual: r.total }) : resCell(null)}</td></tr>`).join('');
+  return `<div class="toolbar"><strong>${esc(dayLabel(state.week))}</strong><span class="muted">${status}</span></div>
+    <div class="card upset-summary">Top 20 overs: ${tallyText(tOver)} · Top 20 unders: ${tallyText(tUnder)}
+      · Winners: ${tallyText({ n: games.filter((g) => g.r).length, hits: games.filter((g) => g.r?.hitWin).length })}
+      · Totals: ${tallyText({ n: games.filter((g) => g.r).length, hits: games.filter((g) => g.r?.hitTotal).length })}
+      <div class="small muted">No free NHL prop lines, so each line is the one a book would most likely post: the half-goal nearest his own average (shots, blocks, saves) or 0.5 (points, goals, assists). Edge = how far tonight's matchup moves the model's chance off what his average alone implies. Real books shade lines too, so compare with the actual line before betting. Goalies are probable, not confirmed (a different starter = void).</div></div>
+    <div class="stack">
+      <div class="card"><h3>Top 20 overs</h3>${picksTable('pick-over', pk.over, idx)}</div>
+      <div class="card"><h3>Top 20 unders</h3>${picksTable('pick-under', pk.under, idx)}</div>
+    </div>
+    <div class="card" style="margin-top:12px"><h3>Game picks</h3><div class="tbl-wrap"><table>
+      <tr><th class="l">Game</th><th class="l">Winner</th><th>Result</th><th class="l">Total</th><th>Result</th></tr>${gRows}</table></div></div>`;
+}
+
+// --------------------------------------------------------- scorecard ----
+function viewScore() {
+  const idx = indexResults(data);
+  const days = Object.values(locked?.days ?? {});
+  const all = { over: [], under: [] }, mk = {}, perDay = [];
+  let gw = 0, gt = 0, gn = 0;
+  for (const d of days) {
+    const row = { d, over: [], under: [], gw: 0, gt: 0, gn: 0 };
+    for (const side of ['over', 'under']) for (const x of d[side]) {
+      const r = { x, res: gradeProp(x, data, idx) };
+      all[side].push(r); row[side].push(r);
+      (mk[`${side}:${x.market}`] ??= []).push(r);
+    }
+    for (const x of d.games) { const r = gradeGame(x, data, idx); if (!r) continue; row.gn++; row.gw += r.hitWin; row.gt += r.hitTotal; }
+    gw += row.gw; gt += row.gt; gn += row.gn;
+    perDay.push(row);
+  }
+  const line = (t) => (t.n ? `${t.hits}-${t.n - t.hits} · <strong>${pct(t.hits / t.n)}</strong> <span class="rk">model ${pct(t.exp / t.n)} · his avg ${pct(t.expBase / t.n)}</span>` : '<span class="muted">none graded yet</span>');
+  const beat = (t) => (t.n ? edgeColor(((t.hits - t.expBase) / t.n) * 100, 10) : '');
+  const sumCard = (title, t) => `<div class="card"><h3>${title}</h3><div style="background:${beat(t)};padding:6px;border-radius:6px">${line(t)}</div>${t.pending ? `<div class="small muted">${t.pending} pending</div>` : ''}${t.void ? `<div class="small muted">${t.void} void</div>` : ''}</div>`;
+  const tO = tally(all.over), tU = tally(all.under);
+  const mkRows = Object.entries(mk).sort().map(([k, v]) => { const t = tally(v); const [side, m] = k.split(':'); return t.n ? `<tr><td class="l">${side === 'over' ? 'Over' : 'Under'} ${MARKET_LABEL[m]}</td><td style="background:${beat(t)}">${line(t)}</td></tr>` : ''; }).join('');
+  const dayRows = perDay.reverse().map((r) => { const o = tally(r.over), u = tally(r.under); return `<tr><td class="l">${esc(r.d.date)}${r.d.partial ? ' <span class="rk" title="Locked after some games had started: only the later games count">partial</span>' : ''}${Date.now() < new Date(r.d.locks_at).getTime() ? ' <span class="rk">upcoming</span>' : ''}</td><td style="background:${beat(o)}">${tallyText(o)}</td><td style="background:${beat(u)}">${tallyText(u)}</td><td>${r.gn ? `${r.gw}-${r.gn - r.gw}` : '–'}</td><td>${r.gn ? `${r.gt}-${r.gn - r.gt}` : '–'}</td></tr>`; }).join('');
+  const B = record?.picks;
+  const bLine = (t) => (t ? `${t.hits}-${t.n - t.hits} · <strong>${pct(t.hits / t.n)}</strong> <span class="rk">model ${pct(t.exp / t.n)} · his avg ${pct(t.expBase / t.n)}</span>` : '–');
+  const bMk = B ? Object.entries(B.markets).map(([k, t]) => { const [side, m] = k.split(':'); return `<tr><td class="l">${side === 'over' ? 'Over' : 'Under'} ${MARKET_LABEL[m]}</td><td style="background:${beat(t)}">${bLine(t)}</td></tr>`; }).join('') : '';
+  return `<div class="toolbar"><strong>Live scorecard</strong><span class="muted">Picks locked before puck drop each day (Top Picks tab), graded when the results come in the next morning. Green = beat what the players' own averages implied, which is the real test of the model.</span></div>
+    <div class="grid games">
+      ${sumCard('Top 20 overs', tO)}${sumCard('Top 20 unders', tU)}
+      <div class="card"><h3>Game winners</h3>${gn ? `${gw}-${gn - gw} · <strong>${pct(gw / gn)}</strong>` : '<span class="muted">none graded yet</span>'}</div>
+      <div class="card"><h3>Totals (5.5)</h3>${gn ? `${gt}-${gn - gt} · <strong>${pct(gt / gn)}</strong>` : '<span class="muted">none graded yet</span>'}</div>
+    </div>
+    <div class="grid two" style="margin-top:12px">
+      <div class="card"><h3>By day</h3><div class="tbl-wrap"><table><tr><th class="l">Date</th><th>Overs</th><th>Unders</th><th>Winners</th><th>Totals</th></tr>${dayRows || '<tr><td class="l muted" colspan="5">No locked days yet.</td></tr>'}</table></div></div>
+      <div class="card"><h3>By market (live)</h3><div class="tbl-wrap"><table style="width:auto">${mkRows || '<tr><td class="l muted">Nothing graded yet.</td></tr>'}</table></div></div>
+    </div>
+    ${B ? `<div class="card" style="margin-top:12px"><h3>Backtest: same method on ${B.days} past game days</h3>
+      <p class="small muted">Each day re-projected using only earlier games (2025-26 and this season so far). What to expect over a long run; any one night will swing a lot.</p>
+      <div class="tbl-wrap"><table style="width:auto">
+        <tr><td class="l">Top 20 overs</td><td style="background:${beat(B.over)}">${bLine(B.over)}</td></tr>
+        <tr><td class="l">Top 20 unders</td><td style="background:${beat(B.under)}">${bLine(B.under)}</td></tr>
+        <tr><td class="l">Game winners</td><td>${pct(B.winner)}</td></tr>
+        <tr><td class="l">Totals (5.5)</td><td>${pct(B.total)}</td></tr>
+        ${bMk}
+      </table></div></div>` : ''}`;
 }
 
 // ----------------------------------------------------------- props ----
