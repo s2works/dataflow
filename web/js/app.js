@@ -1008,7 +1008,7 @@ function viewPicks() {
   const tU = tallyPicks(pk.under.map((x) => ({ x, res: gradeNflPick(x, idx) })));
   const vegas = [...pk.over, ...pk.under].filter((x) => x.src === 'vegas').length;
   const lineNote = vegas
-    ? `<strong>${vegas} of 40</strong> picks are against Vegas lines (consensus of US books, vig removed); the rest use estimated lines where no Vegas prop was pulled.`
+    ? `<strong>${vegas} of ${pk.over.length + pk.under.length}</strong> picks are against Vegas lines (consensus of US books, vig removed); the rest use estimated lines where no Vegas prop was pulled.`
     : '<strong>No Vegas prop lines yet</strong>, so every line is estimated from the player\'s own average. Add the free Odds API key to the refresh job (README: “Player props vs projection → Setup”) and these switch to real Vegas lines automatically.';
   return `<div class="toolbar"><strong>Week ${state.week} top picks</strong><span class="muted">${games_.active() ? '<span class="badge alert">Filtered</span> Ranked within the selected games only (the Scorecard grades the full-week list). ' : ''}${pk.nSaved ? `${pk.nSaved} games saved before kickoff (these count on the Scorecard)${pk.nLive ? `, ${pk.nLive} computed live` : ''}.` : 'Computed live (this week was before the scorecard started).'} ${sampleNote()}</span></div>
     <div class="card upset-summary">Top 20 overs: ${wl(tO)} · Top 20 unders: ${wl(tU)}
