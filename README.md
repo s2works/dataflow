@@ -238,11 +238,11 @@ the anytime-TD price too, and game pages get a props card.
   key and add it as the repo secret **`ODDS_API_KEY`** (Settings → Secrets and
   variables → Actions). Each game costs 6 credits per pull (6 markets × US
   region); ~14 games a week ≈ 85 credits per full refresh. The defaults fit
-  the **free plan (500 credits/month)**: each game is pulled once, about 18
-  hours before kickoff (`PROPS_DAYS_AHEAD=0.75`, `PROPS_MIN_HOURS=48`, ≈ 420
+  the **free plan (500 credits/month)**: each game is pulled once, about 48
+  hours before kickoff (`PROPS_DAYS_AHEAD=2`, `PROPS_MIN_HOURS=72`, ≈ 420
   credits a month). On a paid plan set the repo variables
   **`PROPS_DAYS_AHEAD`** (e.g. 7) and **`PROPS_MIN_HOURS`** (e.g. 12) for
-  earlier and repeated pulls. The job stops when credits run low.
+  earlier and repeated pulls as lines move. The job stops when credits run low.
 
 ### Top Picks and Scorecard
 

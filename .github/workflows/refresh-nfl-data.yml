@@ -33,11 +33,11 @@ jobs:
           # Settings -> Secrets and variables -> Actions. Without it, props are skipped.
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           # Each game's props cost 6 credits per pull; the free plan has 500 a
-          # month. Defaults pull each game once, ~18 h before kickoff (~420
-          # credits a month). Raise PROPS_DAYS_AHEAD / lower PROPS_MIN_HOURS on
-          # a paid plan for earlier and repeated pulls.
-          PROPS_MIN_HOURS: ${{ vars.PROPS_MIN_HOURS || '48' }}
-          PROPS_DAYS_AHEAD: ${{ vars.PROPS_DAYS_AHEAD || '0.75' }}
+          # month. Defaults pull each game once, ~48 h before kickoff (~420
+          # credits a month). On a paid plan lower PROPS_MIN_HOURS (e.g. 12)
+          # to re-pull as lines move.
+          PROPS_MIN_HOURS: ${{ vars.PROPS_MIN_HOURS || '72' }}
+          PROPS_DAYS_AHEAD: ${{ vars.PROPS_DAYS_AHEAD || '2' }}
       - run: node tools/fit_prop_dist.mjs
       - run: node tools/fit_boom_bust.mjs
       - run: node tools/fit_game_model.mjs
