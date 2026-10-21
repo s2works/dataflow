@@ -232,10 +232,34 @@ the anytime-TD price too, and game pages get a props card.
 * **Setup:** lines come from [The Odds API](https://the-odds-api.com). Get a
   key and add it as the repo secret **`ODDS_API_KEY`** (Settings → Secrets and
   variables → Actions). Each game costs 6 credits per pull (6 markets × US
-  region); ~14 games a week ≈ 85 credits per full refresh. Set the repo
-  variable **`PROPS_MIN_HOURS`** to match your plan (e.g. 168 = weekly for a
-  small free allowance, 12 for twice a day on a paid plan). The job stops
-  when credits run low.
+  region); ~14 games a week ≈ 85 credits per full refresh. The defaults fit
+  the **free plan (500 credits/month)**: each game is pulled once, about 18
+  hours before kickoff (`PROPS_DAYS_AHEAD=0.75`, `PROPS_MIN_HOURS=48`, ≈ 420
+  credits a month). On a paid plan set the repo variables
+  **`PROPS_DAYS_AHEAD`** (e.g. 7) and **`PROPS_MIN_HOURS`** (e.g. 12) for
+  earlier and repeated pulls. The job stops when credits run low.
+
+### Top Picks and Scorecard
+
+**Top Picks** ranks every priced prop for the week (pass yds, pass TDs, rush
+yds, receptions, rec yds, plus anytime TD when a book prices it) by **edge**
+= the model's chance minus the book's no-vig chance, and lists the top 20
+overs and top 20 unders with the line, price, projection, reasons and, once
+games are final, ✓/✗. Lines are the **Vegas consensus** whenever the refresh
+job has pulled them; a game without Vegas props gets **estimated** lines
+(the half-yard nearest the median outcome for his own average, compared with
+what that average implies), clearly marked *est.*
+
+`tools/nfl_picks.mjs` (refresh job) saves each game's candidates to
+`web/data/nfl/picks_<season>.json` on every run until kickoff, then freezes
+them, so the **Scorecard** grades exactly what was shown before the game:
+overall, by week, by market and **against Vegas vs estimated lines**, each
+next to what the model expected and what the book implied. Backtest
+(`--backtest`, `picks_record.json`, 33 weeks on estimated lines): top 20
+overs hit 66% vs 49% implied by player averages, unders 56% vs 49%. Free
+historical Vegas prop lines don't exist, and real lines already price in
+injuries and role changes (where most of that edge comes from), so the
+live "against Vegas" record is the real test.
 
 ### Boom / Bust tab
 

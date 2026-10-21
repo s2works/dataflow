@@ -32,11 +32,17 @@ jobs:
           # Optional: player prop lines from The Odds API. Add the key under
           # Settings -> Secrets and variables -> Actions. Without it, props are skipped.
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-          # Hours before a game's props are re-pulled (each pull costs credits).
-          PROPS_MIN_HOURS: ${{ vars.PROPS_MIN_HOURS || '12' }}
+          # Each game's props cost 6 credits per pull; the free plan has 500 a
+          # month. Defaults pull each game once, ~18 h before kickoff (~420
+          # credits a month). Raise PROPS_DAYS_AHEAD / lower PROPS_MIN_HOURS on
+          # a paid plan for earlier and repeated pulls.
+          PROPS_MIN_HOURS: ${{ vars.PROPS_MIN_HOURS || '48' }}
+          PROPS_DAYS_AHEAD: ${{ vars.PROPS_DAYS_AHEAD || '0.75' }}
       - run: node tools/fit_prop_dist.mjs
       - run: node tools/fit_boom_bust.mjs
       - run: node tools/fit_game_model.mjs
+      # Save this week's NFL top picks until kickoff (scorecard) + backtest.
+      - run: node tools/nfl_picks.mjs --backtest
       - run: python pipeline/build_nhl.py
       - run: node tools/nhl_backtest.mjs --fit
       # Lock the next game days' NHL picks until puck drop (live scorecard).
