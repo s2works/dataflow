@@ -8,6 +8,7 @@ import sport from './sports/nhl.js';
 import { buildModel, edgeColor, rankColor, ordinal } from './engine.js';
 import { buildNhlProjector, buildNhlGameModel, goalieSaves } from './nhl/model.js';
 import { gameFilter } from './gamefilter.js';
+import { fairOdds, mountOddsSwitch } from './odds.js';
 import { nhlDayPicks, gradeProp, gradeGame, indexResults, tally, MARKET_LABEL } from './nhl/picks.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -15,7 +16,6 @@ const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<
 const fmt = (v, d = 1) => (v == null || !Number.isFinite(v) ? '–' : v.toFixed(d));
 const pct = (p) => (p == null ? '–' : `${Math.round(p * 100)}%`);
 const signed = (v) => (v == null ? '–' : v > 0 ? `+${v}` : `${v}`);
-const fairOdds = (p) => (!(p > 0 && p < 1) ? '–' : p >= 0.5 ? `${Math.round((-100 * p) / (1 - p))}` : `+${Math.round((100 * (1 - p)) / p)}`);
 const POS_NAME = { C: 'centers', W: 'wingers', D: 'defensemen' };
 const REFRESH_MS = 5 * 60e3;
 
@@ -32,6 +32,7 @@ async function fetchJSON(url) {
 }
 
 async function boot() {
+  mountOddsSwitch(() => model && render());
   $('#tabs').innerHTML = [['matchups', 'Matchups'], ['edges', 'Player Edges'], ['props', 'Player Props'], ['picks', 'Top Picks'], ['score', 'Scorecard'], ['dvp', 'Defense vs Position'], ['rankings', 'Team Rankings']]
     .map(([id, label]) => `<a href="#${id}" data-tab="${id}">${label}</a>`).join('');
   const weekLabel = $('#week').closest('label');

@@ -7,6 +7,7 @@ import { buildGameModel } from './gamemodel.js';
 import { ANGLES, anglesFor, boomBust, angleEffect } from './boombust.js';
 import { buildFirstTd } from './firsttd.js';
 import { gameFilter } from './gamefilter.js';
+import { fmtOdds, fairOdds, juiceLabel, mountOddsSwitch } from './odds.js';
 import { NFL_MARKETS, projectableRows, nflCandidates, topPicks, nflResults, gradeNflPick, tallyPicks } from './nflpicks.js';
 
 const ANGLE_LABELS = Object.fromEntries(ANGLES.map((a) => [a.id, a.label]));
@@ -57,6 +58,7 @@ let forecastsAt = 0;
 
 // ---------------------------------------------------------------- boot ----
 async function boot() {
+  mountOddsSwitch(() => model && render());
   const index = await fetchJSON(`${sport.dataPath}/index.json`);
   indexUpdated = index.updated ?? {};
   lastCheck = new Date();
@@ -528,7 +530,7 @@ function gameProjectionCard(g) {
     <tr><td class="l">Win %</td><td>${g.home} ${pctFmt(p.pHome)}</td><td>${mkt != null ? `${g.home} ${pctFmt(mkt)}` : '–'}</td><td class="l muted">Vegas = moneyline with the vig removed</td></tr>
     ${played}`;
   const r = gameRecord;
-  const note = r ? `Backtest (${r.games} games, 2025–26): the model's average miss is ${r.err.margin.model.toFixed(1)} pts on the margin and ${r.err.total.model.toFixed(1)} on the total, vs Vegas ${r.err.margin.vegas.toFixed(1)} / ${r.err.total.vegas.toFixed(1)}. Against the spread it's ~50% even when it disagrees, so treat it as a second opinion: Vegas closing lines are hard to beat. Break-even at −110 is 52.4%.` : '';
+  const note = r ? `Backtest (${r.games} games, 2025–26): the model's average miss is ${r.err.margin.model.toFixed(1)} pts on the margin and ${r.err.total.model.toFixed(1)} on the total, vs Vegas ${r.err.margin.vegas.toFixed(1)} / ${r.err.total.vegas.toFixed(1)}. Against the spread it's ~50% even when it disagrees, so treat it as a second opinion: Vegas closing lines are hard to beat. Break-even at ${juiceLabel()} is 52.4%.` : '';
   return `<div class="tbl-wrap"><table>${rows}</table></div><p class="muted small">${note}</p>`;
 }
 
@@ -953,7 +955,7 @@ function lineMovement(g) {
   return `${summary}${charts}<p class="muted small">Tracked since ${since} (${hist.length} line change${hist.length === 1 ? '' : 's'} recorded). Opening = first line the refresh job saw.</p>`;
 }
 
-const fmtMl = (v) => (v == null ? '–' : v > 0 ? `+${v}` : `${v}`);
+const fmtMl = fmtOdds;
 
 // -------------------------------------------------------- top picks ----
 // The week's picks: games saved before kickoff come from picks_<season>.json
@@ -1012,7 +1014,7 @@ function viewPicks() {
     : '<strong>No Vegas prop lines yet</strong>, so every line is estimated from the player\'s own average. Add the free Odds API key to the refresh job (README: “Player props vs projection → Setup”) and these switch to real Vegas lines automatically.';
   return `<div class="toolbar"><strong>Week ${state.week} top picks</strong><span class="muted">${games_.active() ? '<span class="badge alert">Filtered</span> Ranked within the selected games only (the Scorecard grades the full-week list). ' : ''}${pk.nSaved ? `${pk.nSaved} games saved before kickoff (these count on the Scorecard)${pk.nLive ? `, ${pk.nLive} computed live` : ''}.` : 'Computed live (this week was before the scorecard started).'} ${sampleNote()}</span></div>
     <div class="card upset-summary">Top 20 overs: ${wl(tO)} · Top 20 unders: ${wl(tU)}
-      <div class="small muted">${lineNote} Edge = the model's chance minus the book's. To beat −110 juice a side needs 52.4%+. Ranked across all props: yards, receptions, pass TDs, and anytime TD when a book prices it.</div></div>
+      <div class="small muted">${lineNote} Edge = the model's chance minus the book's. To beat ${juiceLabel()} juice a side needs 52.4%+. Ranked across all props: yards, receptions, pass TDs, and anytime TD when a book prices it.</div></div>
     <div class="stack">
       <div class="card"><h3>Top 20 overs</h3>${nflPicksTable('nfl-pick-over', pk.over, idx)}</div>
       <div class="card"><h3>Top 20 unders</h3>${nflPicksTable('nfl-pick-under', pk.under, idx)}</div>
@@ -1060,12 +1062,8 @@ function viewScore() {
 }
 
 // ------------------------------------------------------- touchdowns ----
-// American odds equivalent of a probability (no vig): a fair price to compare
-// against a sportsbook's.
-function fairOdds(p) {
-  if (!(p > 0 && p < 1)) return '–';
-  return p >= 0.5 ? `${Math.round((-100 * p) / (1 - p))}` : `+${Math.round((100 * (1 - p)) / p)}`;
-}
+// Fair (no-vig) odds for a probability, to compare against a sportsbook's,
+// come from odds.js (American or decimal, per the top-bar switch).
 const pctFmt = (p) => `${(p * 100).toFixed(0)}%`;
 
 function tdWhy(r, impactKey = 'tdImpact') {
@@ -1096,7 +1094,7 @@ function tdTable(id, rows, limit = 0) {
       id: 'any', label: 'Anytime TD', title: 'Probability of at least one rushing or receiving TD',
       sort: (x) => x.r.td.anytime, bg: (x) => deltaColor(x.d), cell: (x) => `<strong>${pctFmt(x.r.td.anytime)}</strong>`,
     },
-    { id: 'odds', label: 'Fair odds', title: 'No-vig American odds for that probability. A book paying more than this is +EV on the model.', sort: (x) => x.r.td.anytime, cell: (x) => fairOdds(x.r.td.anytime) },
+    { id: 'odds', label: 'Fair odds', title: 'No-vig odds for that probability. A book paying more than this is +EV on the model.', sort: (x) => x.r.td.anytime, cell: (x) => fairOdds(x.r.td.anytime) },
     {
       id: 'book', label: 'Book', title: 'Consensus anytime-TD price (includes the book’s vig). Green when the model’s probability beats the book’s implied probability.',
       sort: (x) => bookTd(x)?.edge ?? -1, bg: (x) => { const b = bookTd(x); return b ? edgeColor(b.edge * 100, 15) : 'transparent'; },
