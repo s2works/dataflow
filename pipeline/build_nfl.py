@@ -287,16 +287,36 @@ def odds_get(path: str, **params) -> tuple[object, dict]:
         return json.loads(resp.read()), dict(resp.headers)
 
 
+def to_prob(american: float) -> float:
+    return -american / (-american + 100) if american < 0 else 100 / (american + 100)
+
+
+def to_american(p: float) -> int:
+    p = min(max(p, 0.001), 0.999)
+    return round(-100 * p / (1 - p)) if p >= 0.5 else round(100 * (1 - p) / p)
+
+
 def consensus(entries: list[dict]) -> dict:
-    """Median line across books; average prices of books posting that line."""
+    """The line most books post (on ties, the one priced closest to even:
+    the main line, not an alternate); prices averaged as
+    probabilities across the books posting it (averaging American odds
+    directly breaks across +/-100)."""
+    def avg(rows, k):
+        ps = [to_prob(e[k]) for e in rows if e.get(k) is not None]
+        return to_american(sum(ps) / len(ps)) if ps else None
+
     points = sorted(e["point"] for e in entries if e.get("point") is not None)
     if not points:  # yes/no markets (anytime TD)
-        prices = sorted(e["over"] for e in entries if e.get("over") is not None)
-        return {"over": prices[len(prices) // 2], "best": max(prices), "books": len(prices)} if prices else {}
-    line = points[len(points) // 2]
+        prices = [e["over"] for e in entries if e.get("over") is not None]
+        return {"over": avg(entries, "over"), "best": max(prices), "books": len(prices)} if prices else {}
+    counts = {pt: points.count(pt) for pt in points}
+    top = max(counts.values())
+    def off_even(pt):
+        ps = [to_prob(e["over"]) for e in entries if e.get("point") == pt and e.get("over") is not None]
+        return abs(sum(ps) / len(ps) - 0.5) if ps else 1
+    line = min(sorted(set(pt for pt in points if counts[pt] == top)), key=off_even)
     at = [e for e in entries if e.get("point") == line]
-    avg = lambda k: round(sum(e[k] for e in at if e.get(k) is not None) / max(1, sum(1 for e in at if e.get(k) is not None)))  # noqa: E731
-    return {"line": line, "over": avg("over"), "under": avg("under"), "books": len(entries)}
+    return {"line": line, "over": avg(at, "over"), "under": avg(at, "under"), "books": len(at)}
 
 
 def parse_event_props(event: dict) -> dict:
@@ -307,15 +327,16 @@ def parse_event_props(event: dict) -> dict:
             stat = PROP_MARKETS.get(market["key"])
             if not stat:
                 continue
-            per_player: dict = {}
+            # One entry per (player, line): a book can post several lines.
+            per_line: dict = {}
             for o in market.get("outcomes", []):
                 player = o.get("description")
                 if not player:
                     continue
-                e = per_player.setdefault(player, {"point": o.get("point")})
+                e = per_line.setdefault((player, o.get("point")), {"point": o.get("point")})
                 side = o.get("name", "").lower()
                 e["over" if side in ("over", "yes") else "under"] = o.get("price")
-            for player, e in per_player.items():
+            for (player, _), e in per_line.items():
                 raw.setdefault(player, {}).setdefault(stat, []).append(e)
     return {p: {k: consensus(v) for k, v in stats.items()} for p, stats in raw.items()}
 

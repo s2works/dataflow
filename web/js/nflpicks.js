@@ -52,6 +52,9 @@ export function nflCandidates(sport, rows, propDist, props = {}) {
         if (proj == null || base == null) continue;
         const over = (m, l) => (stat === 'pass_td' ? poissonAtLeast(m, Math.floor(l) + 1) : overProb(propDist, stat, m, l));
         if (b?.line != null) {
+          // Skip broken quotes: the two sides' implied chances should add to 100-125%.
+          const vig = impliedProb(b.over) + impliedProb(b.under);
+          if (b.over == null || b.under == null || !(vig >= 0.98 && vig <= 1.25)) continue;
           line = b.line; pBook = fairOver(b.over, b.under); src = 'vegas';
         } else {
           // A book lists this game but not this prop for him: skip rather than guess.
