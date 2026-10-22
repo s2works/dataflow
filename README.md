@@ -242,12 +242,21 @@ the anytime-TD price too, and game pages get a props card.
   hours before kickoff (`PROPS_DAYS_AHEAD=2`, `PROPS_MIN_HOURS=72`, ≈ 420
   credits a month). On a paid plan set the repo variables
   **`PROPS_DAYS_AHEAD`** (e.g. 7) and **`PROPS_MIN_HOURS`** (e.g. 12) for
-  earlier and repeated pulls as lines move. The job stops when credits run low.
+  earlier and repeated pulls as lines move.
+* **Markets:** the default six cost 6 credits a game. Rush + rec yds
+  (`player_rush_reception_yds`) is supported but not pulled by default (a 7th
+  credit per game is too close to the free 500 a month). To swap it in, set
+  the repo variable **`PROPS_MARKETS`** to a comma list, e.g.
+  `player_pass_yds,player_rush_yds,player_receptions,player_reception_yds,player_rush_reception_yds,player_anytime_td`
+  (drops pass TDs). Scrimmage yards are projected either way (rush + rec
+  projections, with their own fitted spread for running backs: holdout
+  predicted 37% → 38%, 44% → 45%, 53% → 56%). The job stops when credits run low.
 
 ### Top Picks and Scorecard
 
 **Top Picks** ranks every priced prop for the week (pass yds, pass TDs, rush
-yds, receptions, rec yds, plus anytime TD when a book prices it) by **edge**
+yds, receptions, rec yds, rush + rec (scrimmage) yds for backs, plus anytime
+TD when a book prices it) by **edge**
 = the model's chance minus the book's no-vig chance, and lists the top 20
 overs and top 20 unders with the line, price, projection, reasons and, once
 games are final, ✓/✗. Lines are the **Vegas consensus** whenever the refresh

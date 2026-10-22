@@ -60,7 +60,17 @@ PROP_MARKETS = {
     "player_receptions": "rec",
     "player_reception_yds": "rec_yds",
     "player_anytime_td": "anytime_td",
+    "player_rush_reception_yds": "scrim_yds",
 }
+# Markets requested each pull (1 credit each per game). Default fits the free
+# plan; set the repo variable PROPS_MARKETS to a comma list of the keys above
+# to change it, e.g. swap player_pass_tds for player_rush_reception_yds.
+DEFAULT_MARKETS = "player_pass_yds,player_pass_tds,player_rush_yds,player_receptions,player_reception_yds,player_anytime_td"
+
+
+def requested_markets() -> list[str]:
+    wanted = [m.strip() for m in os.environ.get("PROPS_MARKETS", "").split(",") if m.strip()] or DEFAULT_MARKETS.split(",")
+    return [m for m in wanted if m in PROP_MARKETS]
 
 # How long a downloaded file is reused locally (the scheduled job starts clean).
 CACHE_HOURS = 1
@@ -372,12 +382,12 @@ def update_props(season: int, schedule: pd.DataFrame, players: list[dict]) -> di
         prev = store.get(g["game_id"])
         if prev and (now - dt.datetime.fromisoformat(prev["fetched_at"])).total_seconds() < min_hours * 3600:
             continue
-        cost = len(PROP_MARKETS)
+        cost = len(requested_markets())
         if remaining is not None and remaining < cost:
             print(f"  props: stopping, only {remaining} API credits left")
             break
         try:
-            data, headers = odds_get(f"/events/{ev['id']}/odds", regions="us", markets=",".join(PROP_MARKETS), oddsFormat="american")
+            data, headers = odds_get(f"/events/{ev['id']}/odds", regions="us", markets=",".join(requested_markets()), oddsFormat="american")
         except Exception as exc:  # noqa: BLE001
             print(f"  props: {g['game_id']} failed: {exc}")
             continue

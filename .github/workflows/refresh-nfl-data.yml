@@ -39,6 +39,9 @@ jobs:
           # to re-pull as lines move.
           PROPS_MIN_HOURS: ${{ vars.PROPS_MIN_HOURS || '72' }}
           PROPS_DAYS_AHEAD: ${{ vars.PROPS_DAYS_AHEAD || '2' }}
+          # Prop markets to pull (1 credit each per game); empty = the default
+          # six. See PROP_MARKETS in pipeline/build_nfl.py.
+          PROPS_MARKETS: ${{ vars.PROPS_MARKETS || '' }}
       - run: node tools/fit_prop_dist.mjs
       - run: node tools/fit_boom_bust.mjs
       - run: node tools/fit_game_model.mjs

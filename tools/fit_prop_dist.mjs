@@ -23,7 +23,7 @@ const { buildQ1 } = await load('js/q1.js');
 
 // Stats with a prop market, and the smallest projection worth fitting on.
 const STATS = {
-  pass_yds: 120, rush_yds: 15, rec: 1, rec_yds: 12, rush_att: 5, pass_att: 15,
+  pass_yds: 120, rush_yds: 15, rec: 1, rec_yds: 12, scrim_yds: 20, rush_att: 5, pass_att: 15,
   // First quarter (projections from web/js/q1.js)
   q1_pass_yds: 25, q1_rush_yds: 4, q1_rec: 0.3, q1_rec_yds: 4,
 };
@@ -53,9 +53,11 @@ function collect(season) {
       for (const [k, min] of Object.entries(STATS)) {
         const proj = k in r.proj ? r.proj[k] : q[k]?.proj;
         if (proj == null || proj < min) continue;
+        if (k === 'scrim_yds' && p.pos !== 'RB') continue; // a running-back market
         // Stand-in line for the holdout: player's average (Q1: average × league share).
         const base = k in r.base ? r.base[k] : r.base[q[k].full] * q[k].league;
-        out.push({ k, proj, base, actual: a[k] || 0 });
+        const actual = k === 'scrim_yds' ? (a.rush_yds || 0) + (a.rec_yds || 0) : a[k] || 0;
+        out.push({ k, proj, base, actual });
       }
     }
   }

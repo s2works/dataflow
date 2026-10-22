@@ -111,6 +111,7 @@ export default {
     labels: {
       pass_att: 'Att', pass_yds: 'Pass Yds', pass_td: 'Pass TD', int: 'INT', rush_att: 'Car',
       rush_yds: 'Rush Yds', rush_td: 'Rush TD', tgt: 'Tgt', rec: 'Rec', rec_yds: 'Rec Yds', rec_td: 'Rec TD',
+      scrim_yds: 'Rush+Rec Yds',
     },
     // Which game-level effects a stat responds to.
     category: {

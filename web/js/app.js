@@ -693,7 +693,7 @@ function projTable(id, rows) {
 
   const body = rows.map(({ p, r }) => {
     const key = `${id}:${p.id}`;
-    const line = r.keys
+    const line = [...r.keys, ...(p.pos === 'RB' ? ['scrim_yds'] : [])]
       .filter((k) => r.base[k] > 0.05)
       .map((k) => {
         const d = r.base[k] ? r.proj[k] / r.base[k] - 1 : 0;
@@ -720,7 +720,7 @@ function projTable(id, rows) {
       const all = r.factors
         .map((f) => `<tr><td class="l">${esc(f.label)}</td><td class="l">${esc(f.text)}</td><td><span class="edge" style="background:${edgeColor(f.impact * 100, 12)}">${pctTxt(f.impact)}</span></td></tr>`)
         .join('');
-      const stats = r.keys
+      const stats = [...r.keys, ...(p.pos === 'RB' ? ['scrim_yds'] : [])]
         .map((k) => `<tr><td class="l">${esc(P.labels[k])}</td><td>${fmtStat(k, r.base[k])}</td><td><strong>${fmtStat(k, r.proj[k])}</strong></td></tr>`)
         .join('');
       html += `<tr class="detail"><td colspan="8"><div class="grid two">
@@ -801,7 +801,7 @@ function q1Table(id, rows) {
 }
 
 // ------------------------------------------------------------ props ----
-const PROP_STATS = { pass_yds: 'Pass Yds', pass_td: 'Pass TDs', rush_yds: 'Rush Yds', rec: 'Receptions', rec_yds: 'Rec Yds' };
+const PROP_STATS = { pass_yds: 'Pass Yds', pass_td: 'Pass TDs', rush_yds: 'Rush Yds', rec: 'Receptions', rec_yds: 'Rec Yds', scrim_yds: 'Rush+Rec Yds' };
 const hasProps = (g) => Object.keys(data.props?.[g.game_id]?.players ?? {}).length > 0;
 
 function propsNote() {

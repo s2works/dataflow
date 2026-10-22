@@ -13,7 +13,7 @@
 
 import { overProb, fairOver, impliedProb, poissonAtLeast, medianOutcome } from './props.js';
 
-export const NFL_MARKETS = { pass_yds: 'Pass Yds', pass_td: 'Pass TDs', rush_yds: 'Rush Yds', rec: 'Receptions', rec_yds: 'Rec Yds', anytime_td: 'Anytime TD' };
+export const NFL_MARKETS = { pass_yds: 'Pass Yds', pass_td: 'Pass TDs', rush_yds: 'Rush Yds', rec: 'Receptions', rec_yds: 'Rec Yds', scrim_yds: 'Rush + Rec Yds', anytime_td: 'Anytime TD' };
 const r3 = (x) => Math.round(x * 1000) / 1000;
 const halfLine = (x) => Math.max(0.5, Math.round(x - 0.5) + 0.5);
 
@@ -60,6 +60,8 @@ export function nflCandidates(sport, rows, propDist, props = {}) {
           // A book lists this game but not this prop for him: skip rather than guess.
           if (gameHasLines) continue;
           if (stat === 'pass_yds' || stat === 'pass_td' ? p.pos !== 'QB' : !(stat === 'rec' ? base >= 2 : base >= 20)) continue;
+          // Scrimmage yards only for backs (for receivers it ≈ receiving yards).
+          if (stat === 'scrim_yds' && p.pos !== 'RB') continue;
           line = stat === 'pass_td' ? (base >= 1.2 ? 1.5 : 0.5) : halfLine(medianOutcome(propDist, stat, base));
           pBook = over(base, line); src = 'est';
         }
@@ -97,7 +99,8 @@ export function gradeNflPick(x, idx) {
   if (!idx.final.has(x.game_id)) return null;
   const r = idx.rows.get(`${x.game_id}:${x.id}`);
   if (!r) return { void: true };
-  const actual = x.market === 'anytime_td' ? (r.rush_td || 0) + (r.rec_td || 0) : r[x.market] || 0;
+  const actual = x.market === 'anytime_td' ? (r.rush_td || 0) + (r.rec_td || 0)
+    : x.market === 'scrim_yds' ? (r.rush_yds || 0) + (r.rec_yds || 0) : r[x.market] || 0;
   const over = actual > x.line;
   return { actual, hit: x.side === 'under' ? !over : over };
 }

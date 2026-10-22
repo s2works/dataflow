@@ -579,6 +579,11 @@ export function buildProjector(sport, model, { history = [], weather = new Map()
       f.tdImpact = tdOf(w) > 0 ? projTd / tdOf(w) - 1 : 0;
     }
     factors.sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact));
+    // Scrimmage yards (rushing + receiving), a prop market of its own.
+    if ('rush_yds' in proj || 'rec_yds' in proj) {
+      proj.scrim_yds = (proj.rush_yds || 0) + (proj.rec_yds || 0);
+      base.scrim_yds = (base.rush_yds || 0) + (base.rec_yds || 0);
+    }
 
     return {
       opp, isHome, game: g, weather: w,
