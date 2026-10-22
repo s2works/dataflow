@@ -35,6 +35,7 @@ const state = {
   sort: {},
   expanded: null,
   tdView: 'any',
+  pickLines: 'all', // Top Picks: 'all' lines or 'vegas' only
   weekSort: 'time',
   projView: 'proj',
 };
@@ -969,7 +970,9 @@ function weekPicks() {
     ...Object.entries(saved).filter(([id]) => gameOn(id)).flatMap(([, g]) => g.candidates.map((x) => ({ ...x, status: now >= new Date(g.kickoff).getTime() ? 'locked' : 'saved' }))),
     ...live.map((x) => ({ ...x, status: 'live' })),
   ];
-  return { ...topPicks(cands), nSaved: Object.keys(saved).length, nLive: liveGames.length };
+  const nVegas = cands.filter((x) => x.src === 'vegas').length;
+  const pool = state.pickLines === 'vegas' ? cands.filter((x) => x.src === 'vegas') : cands;
+  return { ...topPicks(pool), nSaved: Object.keys(saved).length, nLive: liveGames.length, nVegas };
 }
 
 const resBadge = (res) => (!res ? '<span class="muted">pending</span>'
@@ -1012,7 +1015,9 @@ function viewPicks() {
   const lineNote = vegas
     ? `<strong>${vegas} of ${pk.over.length + pk.under.length}</strong> picks are against Vegas lines (consensus of US books, vig removed); the rest use estimated lines where no Vegas prop was pulled.`
     : '<strong>No Vegas prop lines yet</strong>, so every line is estimated from the player\'s own average. Add the free Odds API key to the refresh job (README: “Player props vs projection → Setup”) and these switch to real Vegas lines automatically.';
-  return `<div class="toolbar"><strong>Week ${state.week} top picks</strong><span class="muted">${games_.active() ? '<span class="badge alert">Filtered</span> Ranked within the selected games only (the Scorecard grades the full-week list). ' : ''}${pk.nSaved ? `${pk.nSaved} games saved before kickoff (these count on the Scorecard)${pk.nLive ? `, ${pk.nLive} computed live` : ''}.` : 'Computed live (this week was before the scorecard started).'} ${sampleNote()}</span></div>
+  return `<div class="toolbar"><strong>Week ${state.week} top picks</strong>
+      ${seg('pickLines', [['all', 'All lines'], ['vegas', `Vegas lines only (${pk.nVegas})`]])}
+      <span class="muted">${games_.active() ? '<span class="badge alert">Filtered</span> Ranked within the selected games only (the Scorecard grades the full-week list). ' : ''}${pk.nSaved ? `${pk.nSaved} games saved before kickoff (these count on the Scorecard)${pk.nLive ? `, ${pk.nLive} computed live` : ''}.` : 'Computed live (this week was before the scorecard started).'} ${sampleNote()}</span></div>
     <div class="card upset-summary">Top 20 overs: ${wl(tO)} · Top 20 unders: ${wl(tU)}
       <div class="small muted">${lineNote} Edge = the model's chance minus the book's. To beat ${juiceLabel()} juice a side needs 52.4%+. Ranked across all props: yards, receptions, pass TDs, and anytime TD when a book prices it.</div></div>
     <div class="stack">
