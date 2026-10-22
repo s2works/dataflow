@@ -376,11 +376,36 @@ tools/fit_game_model.mjs  game model record vs results and Vegas (refit by the r
 web/data/nfl/             generated JSON (committed)
 ```
 
+### Reliable hourly refresh (free)
+
+GitHub runs the refresh job on its own hourly timer, but drops many scheduled
+runs when it's busy. To make it dependable, have [cron-job.org](https://cron-job.org)
+(free) trigger it every hour:
+
+1. **GitHub token:** github.com → Settings → Developer settings → Personal
+   access tokens → **Fine-grained tokens** → Generate new token. Repository
+   access: *Only select repositories* → `s2works/dataflow`. Repository
+   permissions → **Actions: Read and write**. Copy the token.
+2. **cron-job.org:** create a free account → *Create cronjob*.
+   * URL: `https://api.github.com/repos/s2works/dataflow/actions/workflows/refresh-nfl-data.yml/dispatches`
+   * Schedule: every hour (e.g. minute 5)
+   * Advanced → Request method **POST**; headers
+     `Accept: application/vnd.github+json`,
+     `Authorization: Bearer <your token>`,
+     `X-GitHub-Api-Version: 2022-11-28`,
+     `Content-Type: application/json`; request body `{"ref":"main"}`
+   * *Test run* should return **204** and a new run appears under Actions.
+
+When the token expires, generate a new one and paste it into the cronjob.
+
 ## NHL
 
 Data: [sportsdataverse/fastRhockey-nhl-data](https://github.com/sportsdataverse/fastRhockey-nhl-data)
 (free, updated nightly from the NHL's API): schedule plus team, skater and
-goalie box scores. `pipeline/build_nhl.py` writes `web/data/nhl/<season>.json`
+goalie box scores. Games that have finished but aren't in it yet
+(it posts the next morning) are filled in from the NHL's own API
+(`api-web.nhle.com` boxscores, free, no key), so last night's results usually
+land within a couple of hours of the final horn. `pipeline/build_nhl.py` writes `web/data/nhl/<season>.json`
 (season = start year; the last three are built for priors and backtests).
 NHL plays almost daily, so the date picker selects a **game day** instead of
 a week. There are **no free NHL betting lines or injury feed**, so the game

@@ -12,6 +12,11 @@ working unchanged; the UI labels the index with its date.
 Season labels follow the start year (2026 = the 2026-27 season); fastRhockey
 labels files by end year (2027).
 
+fastRhockey posts each night's games the next morning. Games that have
+finished but aren't in it yet are filled in straight from the NHL's own API
+(api-web.nhle.com boxscores, free, no key), parsed the same way fastRhockey
+does, so results land within a couple of hours of the final horn.
+
 Usage:
     python pipeline/build_nhl.py                    # last three seasons
     python pipeline/build_nhl.py --seasons 2025 2026
@@ -42,6 +47,7 @@ OUT_DIR = ROOT / "web" / "data" / "nhl"
 CACHE_DIR = ROOT / ".cache" / "nhl"
 CACHE_HOURS = 1
 
+NHL_API = "https://api-web.nhle.com/v1/gamecenter/{id}/boxscore"
 GAME_TYPES = {"R": "REG", "P": "POST"}
 # Skater positions: left/right wing grouped as wingers.
 POSITIONS = {"C": "C", "L": "W", "R": "W", "D": "D"}
@@ -88,6 +94,60 @@ def minutes(toi) -> float:
         return 0.0
 
 
+def api_boxscores(sched: pd.DataFrame) -> tuple[list, list, list, dict]:
+    """Team / skater / goalie rows (fastRhockey's columns) for finished games
+    missing from fastRhockey, from the NHL API. Returns ({game_id: (home, away
+    score)} too). Games that started 2.5+ hours ago and aren't final in the
+    schedule are tried; anything not final yet is skipped."""
+    now = dt.datetime.now(dt.timezone.utc)
+    start = pd.to_datetime(sched["game_time"], utc=True, errors="coerce")
+    todo = sched[(~sched["game_state"].isin(["OFF", "FINAL"])) & (start < now - dt.timedelta(hours=2.5))
+                 & (start > now - dt.timedelta(days=5))]
+    teams, skaters, goalies, scores = [], [], [], {}
+    for gid in todo["game_id"]:
+        try:
+            with urllib.request.urlopen(urllib.request.Request(NHL_API.format(id=gid), headers={"User-Agent": "Mozilla/5.0"}), timeout=30) as resp:
+                box = json.loads(resp.read())
+        except Exception as exc:  # noqa: BLE001
+            print(f"  NHL API {gid}: {exc}")
+            continue
+        if box.get("gameState") not in ("OFF", "FINAL"):
+            continue
+        pbs = box.get("playerByGameStats", {})
+        sides = {"home": box["homeTeam"], "away": box["awayTeam"]}
+        for side, team in sides.items():
+            other = sides["away" if side == "home" else "home"]
+            tp = pbs.get(f"{side}Team", {})
+            sk = (tp.get("forwards") or []) + (tp.get("defense") or [])
+            fo = [p["faceoffWinningPctg"] for p in sk if (p.get("faceoffWinningPctg") or 0) > 0]
+            teams.append({
+                "game_id": gid, "team_abbrev": team["abbrev"], "home_away": side,
+                "goals": team.get("score"), "goals_against": other.get("score"), "shots_on_goal": team.get("sog"),
+                **{col: sum(p.get(key) or 0 for p in sk) for col, key in [("blocked_shots", "blockedShots"), ("hits", "hits"),
+                   ("pim", "pim"), ("power_play_goals", "powerPlayGoals"), ("giveaways", "giveaways"), ("takeaways", "takeaways")]},
+                "faceoff_win_pctg": round(sum(fo) / len(fo), 4) if fo else None,
+            })
+            for p in sk:
+                skaters.append({
+                    "game_id": gid, "team_abbrev": team["abbrev"], "player_id": p["playerId"],
+                    "player_name": (p.get("name") or {}).get("default"), "position": p.get("position"),
+                    "goals": p.get("goals"), "assists": p.get("assists"), "points": p.get("points"),
+                    "shots_on_goal": p.get("sog"), "blocked_shots": p.get("blockedShots"), "hits": p.get("hits"),
+                    "power_play_goals": p.get("powerPlayGoals"), "pim": p.get("pim"), "toi": p.get("toi"),
+                })
+            for p in tp.get("goalies") or []:
+                goalies.append({
+                    "game_id": gid, "team_abbrev": team["abbrev"], "player_id": p["playerId"],
+                    "player_name": (p.get("name") or {}).get("default"), "starter": bool(p.get("starter")),
+                    "shots_against": p.get("shotsAgainst"), "saves": p.get("saves"), "goals_against": p.get("goalsAgainst"),
+                    "toi": p.get("toi"), "decision": p.get("decision"),
+                })
+        scores[gid] = (sides["home"].get("score"), sides["away"].get("score"), box.get("gameState"))
+    if todo.shape[0]:
+        print(f"  NHL API: {len(scores)} of {todo.shape[0]} finished games not yet in fastRhockey filled in")
+    return teams, skaters, goalies, scores
+
+
 def write_if_changed(path: Path, text: str) -> bool:
     if path.exists() and path.read_text() == text:
         return False
@@ -105,6 +165,10 @@ def build_season(season: int) -> dict | None:
     sched = sched[sched["game_type"].isin(GAME_TYPES)].copy()
     sched["game_type"] = sched["game_type"].map(GAME_TYPES)
     sched = sched.sort_values(["game_date", "game_time", "game_id"])
+    api_team, api_sk, api_gl, api_scores = api_boxscores(sched)
+    for gid, (hs, aws, state) in api_scores.items():
+        row = sched["game_id"] == gid
+        sched.loc[row, ["home_score", "away_score", "game_state"]] = [hs, aws, state]
     # Game-day index used as the "week" everywhere.
     days = {d: i + 1 for i, d in enumerate(sorted(sched["game_date"].unique()))}
     sched["week"] = sched["game_date"].map(days)
@@ -112,6 +176,8 @@ def build_season(season: int) -> dict | None:
     sched.loc[~played, ["home_score", "away_score"]] = None
 
     team_box = pd.read_parquet(io.BytesIO(raw["team"])) if raw["team"] else pd.DataFrame()
+    if api_team:
+        team_box = pd.concat([team_box, pd.DataFrame(api_team)], ignore_index=True)
     nick = team_box.drop_duplicates("team_abbrev").set_index("team_abbrev")["team_name"].to_dict() if len(team_box) else {}
     city = {**dict(zip(sched["home_team_abbr"], sched["home_team_name"])), **dict(zip(sched["away_team_abbr"], sched["away_team_name"]))}
     teams = [{"abbr": a, "name": f"{city.get(a, '')} {nick.get(a, '')}".strip()} for a in sorted(city)]
@@ -146,6 +212,8 @@ def build_season(season: int) -> dict | None:
     players, player_games, position_games = [], [], []
     if raw["skater"]:
         sk = pd.read_parquet(io.BytesIO(raw["skater"]))
+        if api_sk:
+            sk = pd.concat([sk, pd.DataFrame(api_sk)], ignore_index=True)
         sk = sk[sk["game_id"].isin(known)].copy()
         sk["pos"] = sk["position"].map(POSITIONS)
         sk["toi"] = sk["toi"].map(minutes)
@@ -168,6 +236,8 @@ def build_season(season: int) -> dict | None:
     goalie_games = []
     if raw["goalie"]:
         gb = pd.read_parquet(io.BytesIO(raw["goalie"]))
+        if api_gl:
+            gb = pd.concat([gb, pd.DataFrame(api_gl)], ignore_index=True)
         gb = gb[gb["game_id"].isin(known)].copy()
         gb["toi"] = gb["toi"].map(minutes)
         gb = gb[gb["toi"] > 0]

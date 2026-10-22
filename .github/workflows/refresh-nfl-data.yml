@@ -2,10 +2,11 @@ name: Refresh data
 
 on:
   schedule:
-    # Every 2 hours, September through June (NFL Sept-Feb, NHL Oct-June).
-    # Each run also snapshots NFL betting lines, so this cadence is the
-    # resolution of line-movement history.
-    - cron: "17 */2 * 1-6,9-12 *"
+    # Hourly, September through June (NFL Sept-Feb, NHL Oct-June). GitHub
+    # skips many scheduled runs when busy, so an outside scheduler
+    # (cron-job.org, README "Reliable hourly refresh") also triggers this via
+    # workflow_dispatch; overlapping runs queue (concurrency below).
+    - cron: "17 * * 1-6,9-12 *"
   workflow_dispatch:
 
 permissions:
