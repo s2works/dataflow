@@ -251,6 +251,7 @@ function viewDay() {
   });
   return `<div class="toolbar"><strong>${esc(dayLabel(state.week))}</strong>${seg('weekSort', [['time', 'By puck drop'], ['upset', 'By upset chance']])}<span class="muted">Game model, probable goalies and top skaters. Click a game for everything. ${sampleNote()}</span></div>
     ${upsetSummary(games)}
+    ${modelPicksCard(dayGames())}
     <div class="grid games">${cards.join('')}</div>`;
 }
 
@@ -259,6 +260,39 @@ function winBar(g, p) {
     <span class="wb-away" style="width:${((1 - p.pHome) * 100).toFixed(1)}%">${pct(1 - p.pHome)}</span>
     <span class="wb-home" style="width:${(p.pHome * 100).toFixed(1)}%">${pct(p.pHome)}</span>
   </div>`;
+}
+
+// Model picks for the day: winner, puck line and total, graded once final.
+function modelPicksCard(games) {
+  if (!games.length) return '';
+  const res = (ok) => (ok == null ? '<span class="muted">–</span>' : `<span class="res ${ok ? 'res-hit' : 'res-miss'}">${ok ? '✓' : '✗'}</span>`);
+  const t = { w: [0, 0], pl: [0, 0], ou: [0, 0] };
+  const rows = games.map((g) => {
+    const p = gameModel.predict(g);
+    const pick = p.pHome >= 0.5 ? g.home : g.away, pickP = Math.max(p.pHome, 1 - p.pHome);
+    // Puck line: home −1.5 or away +1.5, whichever the model gives 50%+.
+    const homePl = p.pHomeMinus15 >= 0.5;
+    const over = p.pOver55 >= 0.5;
+    const final = g.home_score != null;
+    const margin = final ? g.home_score - g.away_score : null;
+    const winOk = final ? (margin > 0 ? g.home : g.away) === pick : null;
+    const plOk = final ? (margin >= 2) === homePl : null;
+    const ouOk = final ? (g.home_score + g.away_score > 5.5) === over : null;
+    for (const [k, v] of [['w', winOk], ['pl', plOk], ['ou', ouOk]]) if (v != null) { t[k][0] += v ? 1 : 0; t[k][1]++; }
+    return `<tr><td class="l"><a href="#matchups/${g.game_id}">${g.away} @ ${g.home}</a></td>
+      <td class="l"><strong>${pick}</strong> ${pct(pickP)}</td><td>${res(winOk)}</td>
+      <td class="l">${homePl ? `${g.home} −1.5` : `${g.away} +1.5`} <span class="rk">${pct(homePl ? p.pHomeMinus15 : 1 - p.pHomeMinus15)}</span></td><td>${res(plOk)}</td>
+      <td class="l">${over ? 'Over' : 'Under'} 5.5 <span class="rk">${pct(over ? p.pOver55 : 1 - p.pOver55)} · proj ${fmt(p.total, 1)}</span></td><td>${res(ouOk)}</td>
+      <td>${final ? `${g.away_score}–${g.home_score}` : '<span class="muted">–</span>'}</td></tr>`;
+  }).join('');
+  const rec = (x) => (x[1] ? ` <strong>${x[0]}-${x[1] - x[0]}</strong>` : '');
+  const r = record?.picks;
+  const note = r ? `Backtest (${record.games.n} games): the model's winner was right ${pct(r.winner)} of the time and its total 5.5 side ${pct(r.total)}. No free NHL betting lines, so these are the model's own numbers; win % includes overtime and shootouts.` : '';
+  return `<div class="card" style="margin-bottom:12px"><h3>Model picks</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th class="l">Game</th><th class="l">Model winner</th><th>${rec(t.w)}</th><th class="l">Puck line</th><th>${rec(t.pl)}</th><th class="l">Total</th><th>${rec(t.ou)}</th><th>Final</th></tr>
+      ${rows}</table></div>
+    <p class="small muted">${note}</p></div>`;
 }
 
 function upsetSummary(games) {
