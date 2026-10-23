@@ -15,6 +15,9 @@ import { overProb, fairOver, impliedProb, poissonAtLeast, medianOutcome, implied
 
 export const NFL_MARKETS = { pass_yds: 'Pass Yds', pass_td: 'Pass TDs', rush_yds: 'Rush Yds', rec: 'Receptions', rec_yds: 'Rec Yds', scrim_yds: 'Rush + Rec Yds', anytime_td: 'Anytime TD' };
 const r3 = (x) => Math.round(x * 1000) / 1000;
+// "Smash" = beats the line by 50%+ and by at least this much; "dud" = the
+// same margin below it (Boom / Bust tab).
+export const SMASH_MARGIN = { pass_yds: 50, rush_yds: 15, rec_yds: 15, scrim_yds: 20, rec: 2, pass_td: 1 };
 const halfLine = (x) => Math.max(0.5, Math.round(x - 0.5) + 0.5);
 
 // Same player filter as the Projections tab: active, not ruled out, and in a
@@ -46,7 +49,7 @@ export function nflCandidates(sport, rows, propDist, props = {}) {
     const book = props[gid]?.players?.[p.id];
     for (const stat of Object.keys(NFL_MARKETS)) {
       const b = book?.[stat];
-      let line, pModel, pBook, src, proj, base, raw = null;
+      let line, pModel, pBook, src, proj, base, raw = null, smash = null, dud = null, pSmash = null, pDud = null;
       if (stat === 'anytime_td') {
         if (b?.over == null) continue; // only priced against a real book
         line = 0.5; proj = r.td.lambda; base = r.td.baseLambda; pBook = impliedProb(b.over); src = 'vegas';
@@ -75,12 +78,19 @@ export function nflCandidates(sport, rows, propDist, props = {}) {
           if (implied != null) { raw = proj; proj = W * proj + (1 - W) * implied; }
         }
         pModel = over(proj, line);
+        // Smash / dud chances from the same outcome spread.
+        const mg = SMASH_MARGIN[stat];
+        smash = Math.max(line * 1.5, line + mg);
+        dud = Math.max(0, Math.min(line / 1.5, line - mg));
+        pSmash = over(proj, smash);
+        pDud = dud > 0 ? 1 - over(proj, dud) : 0;
       }
       if (pModel == null || pBook == null) continue;
       out.push({
         id: p.id, name: p.name, pos: p.pos, team: p.team, opp: r.opp, home: r.isHome, game_id: gid, week: r.game.week,
         market: stat, line, src, price: b ? { over: b.over ?? null, under: b.under ?? null, open: b.open ?? null } : null,
-        proj: r3(proj), ...(raw != null ? { projModel: r3(raw) } : {}), base: r3(base), p: r3(pModel), pBook: r3(pBook), edge: r3(pModel - pBook),
+        proj: r3(proj), ...(raw != null ? { projModel: r3(raw) } : {}), base: r3(base), p: r3(pModel),
+        ...(smash != null ? { smash: r3(smash), pSmash: r3(pSmash), dud: r3(dud), pDud: r3(pDud) } : {}), pBook: r3(pBook), edge: r3(pModel - pBook),
         why: r.factors.filter((f) => Math.abs(f.impact) >= 0.03).slice(0, 3).map((f) => f.text ?? f.label),
       });
     }

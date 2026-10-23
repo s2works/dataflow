@@ -83,6 +83,7 @@ else console.log('picks unchanged');
 if (process.argv.includes('--backtest')) {
   const all = { over: [], under: [] }, mk = {};
   const allSides = [], allSidesMk = {};
+  const smashRows = [], dudRows = [];
   let weeks = 0;
   for (const s of [...seasons].sort()) {
     const d = readSeason(s), prev = readSeason(s - 1);
@@ -94,6 +95,13 @@ if (process.argv.includes('--backtest')) {
       const cands = weekCandidates(d, hist, w, games);
       for (const c of cands) {
         if (c.market === 'anytime_td') continue;
+        // Smash / dud calibration.
+        const r0 = idx.rows.get(`${c.game_id}:${c.id}`);
+        if (idx.final.has(c.game_id) && r0 && c.pSmash != null) {
+          const act = c.market === 'scrim_yds' ? (r0.rush_yds || 0) + (r0.rec_yds || 0) : r0[c.market] || 0;
+          smashRows.push({ p: c.pSmash, y: act >= c.smash });
+          if (c.pDud > 0) dudRows.push({ p: c.pDud, y: act <= c.dud });
+        }
         const x = modelSide(c);
         const row = { x, res: gradeNflPick(x, idx) };
         allSides.push(row);
@@ -121,7 +129,15 @@ if (process.argv.includes('--backtest')) {
   console.log('\nEvery prop on the model\'s side, by model chance: predicted → hit (n)');
   console.log(`  all        ${fb(byProb)}`);
   for (const [k, bs] of Object.entries(byProbMarket)) console.log(`  ${k.padEnd(10)} ${fb(bs)}`);
-  const body = { weeks, ...t, markets, byProb, byProbMarket };
+  // Predicted smash / dud chance vs how often it happened.
+  const cal = (rows) => [[0, 0.1], [0.1, 0.2], [0.2, 0.3], [0.3, 0.45], [0.45, 1.01]].map(([lo, hi]) => {
+    const xs = rows.filter((r) => r.p >= lo && r.p < hi);
+    return { lo, hi, n: xs.length, pred: xs.length ? +(xs.reduce((s, r) => s + r.p, 0) / xs.length).toFixed(3) : null, hit: xs.length ? +(xs.filter((r) => r.y).length / xs.length).toFixed(3) : null };
+  });
+  const smashCal = cal(smashRows), dudCal = cal(dudRows);
+  const fc = (bs) => bs.filter((b) => b.n).map((b) => `${Math.round(b.pred * 100)}→${Math.round(b.hit * 100)}% (${b.n})`).join(' | ');
+  console.log(`\nSmash (beat line by 50%+): ${fc(smashCal)}\nDud (miss by 33%+):        ${fc(dudCal)}`);
+  const body = { weeks, ...t, markets, byProb, byProbMarket, smash: smashCal, dud: dudCal };
   const old = read(recFile);
   if (old && JSON.stringify({ ...old, fitted_at: undefined }) === JSON.stringify({ ...body, fitted_at: undefined })) console.log('picks_record.json unchanged');
   else { fs.writeFileSync(recFile, JSON.stringify({ fitted_at: new Date().toISOString().slice(0, 10), ...body }) + '\n'); console.log(`wrote ${path.relative(process.cwd(), recFile)}`); }

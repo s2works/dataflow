@@ -11,6 +11,7 @@ import { gameFilter } from './gamefilter.js';
 import { fairOdds, mountOddsSwitch } from './odds.js';
 import { nhlDayPicks, gradeProp, gradeGame, indexResults, tally, MARKET_LABEL, lineupCore } from './nhl/picks.js';
 import { rankPicks, RANK_LABELS, MIN_PROB } from './rankpicks.js';
+import { nbAtLeast } from './props.js';
 
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
@@ -20,7 +21,7 @@ const signed = (v) => (v == null ? '–' : v > 0 ? `+${v}` : `${v}`);
 const POS_NAME = { C: 'centers', W: 'wingers', D: 'defensemen' };
 const REFRESH_MS = 5 * 60e3;
 
-const state = { season: null, week: null, lastN: 0, tab: 'matchups', game: null, pos: 'ALL', search: '', propView: 'skaters', edgeMetric: 'pts', core: 'core', pickRank: 'edge', pickMarket: 'all', pickMin: '0', dvpMetric: 'pts', rankSide: 'off', weekSort: 'time', sort: {} };
+const state = { season: null, week: null, lastN: 0, tab: 'matchups', game: null, pos: 'ALL', search: '', propView: 'skaters', edgeMetric: 'pts', core: 'core', pickRank: 'edge', pickMarket: 'all', pickMin: '0', propMin: '0', dvpMetric: 'pts', rankSide: 'off', weekSort: 'time', sort: {} };
 let data = null, model = null, projector = null, gameModel = null, history = [], record = null, locked = null, dayPicks = null;
 let indexUpdated = {}, lastCheck = null;
 const cache = new Map();
@@ -419,7 +420,11 @@ function currentPicks() {
   if (state.pickRank !== 'edge' || state.pickMarket !== 'all' || +state.pickMin > 0) {
     const pk = nhlDayPicks(sport, data, history, state.week, { games: shownGames(), ...(state.lastN ? {} : { model }) });
     const cands = state.pickMarket === 'all' ? pk.props : pk.props.filter((x) => x.market === state.pickMarket);
-    return { ...pk, ...rankPicks(cands, { by: state.pickRank, minProb: +state.pickMin, maxPerMarket: state.pickMarket === 'all' ? { saves: 4 } : {} }), source: 'ranked' };
+    return { ...pk, ...rankPicks(cands, {
+      by: state.pickRank, minProb: +state.pickMin, maxPerMarket: state.pickMarket === 'all' ? { saves: 4 } : {},
+      // Model-chance views: no goal/assist unders or 85%+ sides (see confidentProps).
+      ...(state.pickRank === 'edge' ? {} : { noUnder: NO_UNDER, maxProb: MAX_CONF }),
+    }), source: 'ranked' };
   }
   // Some games filtered out: re-rank within the games shown.
   if (games_.active()) {
@@ -557,7 +562,23 @@ const why = (r) => r.factors
   .map((f) => { const v = Math.abs(f.impact) >= Math.abs(f.impactSog) ? f.impact : f.impactSog; return `<span class="chip" style="background:${edgeColor(v * 100, 12)}">${esc(f.text)} <strong>${v >= 0 ? '+' : '−'}${Math.abs(v * 100).toFixed(0)}%</strong></span>`; })
   .slice(0, 3).join('') || '<span class="muted">≈ his average</span>';
 
-function propsTable(id, rows) {
+// Props at the line a book would most likely post (as in Top Picks) where the
+// model gives one side at least `min`. Leaves out goal / assist unders (books
+// rarely offer them) and sides over 85% (priced too steeply to matter).
+const NO_UNDER = ['g', 'a'];
+const MAX_CONF = 0.85;
+function confidentProps(x, min) {
+  const out = [];
+  for (const [k, mk] of Object.entries(sport.projection.markets)) {
+    const line = k === 'sog' || k === 'blk' ? Math.max(0.5, Math.round(x.r.base[k] - 0.5) + 0.5) : 0.5;
+    const p = nbAtLeast(x.r.proj[k], mk.r, Math.floor(line) + 1);
+    if (p >= min && p <= MAX_CONF) out.push({ k, line, side: 'Over', q: p });
+    else if (1 - p >= min && 1 - p <= MAX_CONF && !NO_UNDER.includes(k)) out.push({ k, line, side: 'Under', q: 1 - p });
+  }
+  return out.sort((a, b) => b.q - a.q);
+}
+
+function propsTable(id, rows, { min = 0 } = {}) {
   const P = sport.projection.markets;
   const cell = (x, k, i) => {
     const p = x.r.probs[k][i];
@@ -592,9 +613,15 @@ function propsTable(id, rows) {
       sort: (x) => x.r.proj.blk, bg: (x) => edgeColor(cell(x, 'blk', 0).base * 100, 25),
       cell: (x) => `<strong>${fmt(x.r.proj.blk, 2)}</strong> <span class="rk">${x.r.probs.blk.map((p, i) => `${Math.ceil(P.blk.lines[i])}+ ${pct(p)}`).join(' · ')}</span>`,
     },
+    ...(min > 0 ? [{
+      id: 'conf', label: 'Confident', cls: 'l wrap', title: `Props at the usual book line where the model gives a side ${Math.round(min * 100)}%+`,
+      sort: (x) => x.conf[0]?.q ?? 0,
+      cell: (x) => `<div class="chips">${x.conf.map((c) => `<span class="chip" style="background:${c.side === 'Over' ? 'rgba(var(--good-rgb),.25)' : 'rgba(var(--bad-rgb),.2)'}">${c.side} ${c.line} ${MARKET_LABEL[c.k]} <strong>${pct(c.q)}</strong></span>`).join('')}</div>`,
+    }] : []),
     { id: 'why', label: 'Why', cls: 'l wrap', cell: (x) => `<div class="chips">${why(x.r)}</div>` },
   ];
-  return table(id, cols, rows, { col: 'pts', asc: false });
+  if (min > 0) rows = rows.map((x) => ({ ...x, conf: confidentProps(x, min) })).filter((x) => x.conf.length);
+  return table(id, cols, rows, min > 0 ? { col: 'conf', asc: false } : { col: 'pts', asc: false });
 }
 
 function goaliesTable(games) {
@@ -624,11 +651,12 @@ function viewProps() {
       ${seg('propView', [['skaters', 'Skaters'], ['goalies', 'Goalie saves']])}
       ${skaters ? seg('pos', [['ALL', 'All'], ['C', 'C'], ['W', 'W'], ['D', 'D']]) : ''}
       ${skaters ? coreSeg() : ''}
+      ${skaters ? `<span class="muted small">Model chance</span>${seg('propMin', MIN_PROB)}` : ''}
       ${skaters ? `<input id="search" type="search" placeholder="Player or team…" value="${esc(state.search)}">` : ''}
       <span class="spacer"></span>
       <span class="muted">${skaters ? `Average (last season as a 25-game prior) × opponent vs position (shots, blocks), home ice, opposing goalie, ice-time trend. Chances use each stat's backtested spread. ${calib}` : 'Probable goalies (not confirmed: right ~64% of the time in backtests). Saves = shots against × save %.'} ${sampleNote()}</span>
     </div>
-    <div class="card">${skaters ? propsTable('props', rows) : goaliesTable(games)}</div>`;
+    <div class="card">${skaters ? propsTable('props', rows, { min: +state.propMin }) : goaliesTable(games)}</div>`;
 }
 
 // -------------------------------------------------------------- DvP ----

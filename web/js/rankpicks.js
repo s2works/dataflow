@@ -39,10 +39,10 @@ export function probBuckets(rows) {
 // The model's side for a candidate: whichever it gives 50%+.
 export const modelSide = (x) => ({ ...x, side: x.p >= 0.5 ? 'over' : 'under' });
 
-export function rankPicks(cands, { by = 'edge', top = 20, maxPerMarket = {}, noUnder = ['anytime_td'], minProb = 0 } = {}) {
+export function rankPicks(cands, { by = 'edge', top = 20, maxPerMarket = {}, noUnder = ['anytime_td'], minProb = 0, maxProb = 1 } = {}) {
   const list = (over) => {
     const out = [], per = {};
-    const rows = cands.filter((x) => SIDE[by](x, over) && (over || !noUnder.includes(x.market)) && (over ? x.p : 1 - x.p) >= minProb)
+    const rows = cands.filter((x) => SIDE[by](x, over) && (over || !noUnder.includes(x.market)) && (over ? x.p : 1 - x.p) >= minProb && (over ? x.p : 1 - x.p) <= maxProb)
       .sort((a, b) => SCORE[by](b, over) - SCORE[by](a, over));
     for (const x of rows) {
       if (out.length >= top) break;

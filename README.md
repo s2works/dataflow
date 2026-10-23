@@ -297,6 +297,14 @@ live "against Vegas" record is the real test.
 
 ### Boom / Bust tab
 
+**Prop smash / dud spots** (on this tab): for every prop with a line (Vegas
+or estimated), the model's chance he beats it by 50%+ and by a real amount
+(15 rush or rec yds, 20 rush+rec, 50 passing, 2 catches), or falls a third
+or more short. Different from edge: a big edge can still be a narrow
+clear. Backtest (33 weeks, est. lines): predicted 25% → 25%, 34% → 35%,
+51% → 55% smash; dud 24% → 25%, 35% → 33%.
+
+
 **Boom** = at least 1.5× the player's average (and at least QB 22 / RB 16 /
 WR 16 / TE 12 PPR); **bust** = half his average or less. Each player gets a
 calibrated P(boom) and P(bust) next to the normal rate for his position, plus
@@ -477,7 +485,10 @@ days, each projected from earlier games only, ~21,600 skater-games):
 * **Confidence:** every prop on the model's side, by the model's chance:
   60-65% hit 63%, 65-70% hit 67% (NFL on estimated lines: 62% / 69%). Top
   Picks has a *Model chance* filter (55% / 60% / 65%+) showing these
-  backtest hit rates for the selected market.
+  backtest hit rates for the selected market; so do NHL Player Props (a
+  *Confident* column with props at the usual book line; no goal/assist unders
+  or 85%+ sides, which books rarely offer or price too steeply) and NFL
+  Projections → Props vs projection.
 * **Goalies:** probable starter = most starts in the last 10, or the backup
   on the second night of a back-to-back if the starter played yesterday:
   right 64% of the time (vs 57% for "most recent starts"). Saves = shots

@@ -40,6 +40,7 @@ const state = {
   pickRank: 'edge', // Top Picks ranking (rankpicks.js)
   pickMarket: 'all',
   pickMin: '0', // Top Picks: minimum model chance for the side
+  propMin: '0', // Props vs projection: minimum model chance for the side
   weekSort: 'time',
   projView: 'proj',
 };
@@ -755,12 +756,13 @@ function viewProjections() {
   if (q) rows = rows.filter((x) => x.p.name.toLowerCase().includes(q) || x.p.team.toLowerCase() === q);
   return `<div class="toolbar">
       ${seg('projView', [['proj', 'Projections'], ['q1', '1st quarter'], ['props', 'Props vs projection']])}
+      ${props ? `<span class="muted small">Model chance</span>${seg('propMin', MIN_PROB)}` : ''}
       ${seg('pos', [['ALL', 'All'], ...Object.keys(sport.positions).map((p) => [p, p])])}
       <input id="search" type="search" placeholder="Player or team…" value="${esc(state.search)}">
       <span class="spacer"></span>
       <span class="muted">${props ? propsNote() : ''}${state.projView === 'q1' ? q1Note() : ''}Average × opponent, Vegas total, game script, weather, divisional, rest, history vs opponent, recent form. Click a row for the full breakdown. ${sampleNote()}</span>
     </div>
-    <div class="card">${props ? propsTable('props', propRows(rows)) : state.projView === 'q1' ? q1Table('q1', rows) : projTable('proj', rows)}</div>`;
+    <div class="card">${props ? propsTable('props', propRows(rows).filter((x) => x.pOver != null && Math.max(x.pOver, 1 - x.pOver) >= +state.propMin)) : state.projView === 'q1' ? q1Table('q1', rows) : projTable('proj', rows)}</div>`;
 }
 
 // ------------------------------------------------------- 1st quarter ----
@@ -1251,6 +1253,61 @@ function boomTable(id, rows, kind) {
   return table(id, cols, rows, { col: isBoom ? 'boom' : 'bust', asc: false });
 }
 
+// Prop smash / dud spots: the model's chance of beating the line by a wide
+// margin (or missing it by one). Vegas line where pulled, estimated otherwise.
+function smashRows() {
+  const games = weekGames().filter((g) => gameOn(g.game_id));
+  let c = nflCandidates(sport, projectableRows(sport, model, projector, games), propDist, data.props ?? {}).filter((x) => x.pSmash != null);
+  if (state.pos !== 'ALL') c = c.filter((x) => x.pos === state.pos);
+  const q = state.search.trim().toLowerCase();
+  if (q) c = c.filter((x) => x.name.toLowerCase().includes(q) || x.team.toLowerCase() === q);
+  return c;
+}
+
+function smashTable(id, rows, kind) {
+  const smash = kind === 'smash';
+  const idx = nflResults(data);
+  const d = (x) => (x.market === 'rec' || x.market === 'pass_td' ? 1 : 0);
+  const cols = [
+    { id: 'name', label: 'Player', cls: 'l', cell: (x) => `${esc(x.name)}${injuryBadge(x.id)} <span class="pos">${x.pos}</span>` },
+    { id: 'game', label: 'Game', cls: 'l', cell: (x) => `${x.team} <span class="vs">${x.home ? 'vs' : '@'}</span> ${x.opp}` },
+    { id: 'prop', label: 'Line', cls: 'l', cell: (x) => `${x.line} ${NFL_MARKETS[x.market]} ${x.src === 'vegas' ? '<span class="badge pick">Vegas</span>' : '<span class="badge alert">est.</span>'}` },
+    { id: 'proj', label: 'Proj', cell: (x) => `<strong>${fmt(x.proj, 1)}</strong>` },
+    { id: 'p', label: smash ? 'Over' : 'Under', title: 'Model chance of clearing the line on this side', cell: (x) => pctFmt(smash ? x.p : 1 - x.p) },
+    {
+      id: 'ps', label: smash ? 'Smash' : 'Dud', title: smash ? 'Chance he beats the line by 50%+ (and by a real amount: 15 yds, 20 rush+rec, 50 pass, 2 catches)' : 'Chance he falls a third or more below the line (same minimum margins)',
+      bg: (x) => (smash ? `rgba(var(--good-rgb), ${Math.min(0.6, x.pSmash)})` : `rgba(var(--bad-rgb), ${Math.min(0.6, x.pDud)})`),
+      cell: (x) => `<strong>${pctFmt(smash ? x.pSmash : x.pDud)}</strong> <span class="rk">${smash ? '≥' : '≤'} ${fmt(smash ? x.smash : x.dud, d(x))}</span>`,
+    },
+    {
+      id: 'res', label: 'Result', cls: 'c',
+      cell: (x) => {
+        if (!idx.final.has(x.game_id)) return '<span class="muted">pending</span>';
+        const r = idx.rows.get(`${x.game_id}:${x.id}`);
+        if (!r) return '<span class="muted">void</span>';
+        const a = x.market === 'scrim_yds' ? (r.rush_yds || 0) + (r.rec_yds || 0) : r[x.market] || 0;
+        const hit = smash ? a >= x.smash : a <= x.dud;
+        return `<span class="res ${hit ? 'res-hit' : 'res-miss'}">${hit ? '✓' : '✗'} ${a}</span>`;
+      },
+    },
+  ];
+  return table(id, cols, rows, null);
+}
+
+function smashCards() {
+  const all = smashRows();
+  const top = (k) => [...all].filter((x) => (k === 'smash' ? x.pSmash : x.pDud) > 0).sort((a, b) => (k === 'smash' ? b.pSmash - a.pSmash : b.pDud - a.pDud)).slice(0, 15);
+  const cal = (bs) => (bs ? bs.filter((b) => b.n >= 50).map((b) => `<span class="chip">model ${Math.round(b.pred * 100)}% → <strong>${Math.round(b.hit * 100)}%</strong></span>`).join('') : '');
+  return `<div class="card"><h3>Prop smash spots</h3>
+      <p class="small muted">Props the model expects him to clear <em>by a lot</em>: the chance he beats the line by 50%+ (and by at least 15 yds / 20 rush+rec / 50 passing / 2 catches). Different from edge: a prop can have a big edge but only clear by a little.</p>
+      <div class="chips">${cal(picksRecord?.smash) ? `<span class="small muted">Backtest:</span>${cal(picksRecord.smash)}` : ''}</div>
+      ${smashTable('smash', top('smash'), 'smash')}</div>
+    <div class="card"><h3>Prop dud spots</h3>
+      <p class="small muted">The chance he falls a third or more short of the line (same minimum margins): strong unders.</p>
+      <div class="chips">${cal(picksRecord?.dud) ? `<span class="small muted">Backtest:</span>${cal(picksRecord.dud)}` : ''}</div>
+      ${smashTable('dud', top('dud'), 'dud')}</div>`;
+}
+
 function viewBoomBust() {
   if (!boomFit) return '<div class="card">Boom/bust model not built yet — run <code>node tools/fit_boom_bust.mjs</code>.</div>';
   let rows = boomRows().filter((x) => teamOn(x.p.team));
@@ -1273,6 +1330,7 @@ function viewBoomBust() {
     </div>
     <div class="stack">
       <div class="card"><h3>Boom candidates</h3>${boomTable('boom', boom, 'boom')}</div>
+      ${smashCards()}
       <div class="card"><h3>Bust risks</h3>${boomTable('bust', bust, 'bust')}</div>
       <div class="card"><h3>Angle track record (2025 + 2026 backtest)</h3>
         <div class="tbl-wrap"><table><tr><th class="l">Angle</th><th class="l">What it actually does</th><th>Boom rate</th><th>Bust rate</th><th>Games</th></tr>${legend}</table></div>
