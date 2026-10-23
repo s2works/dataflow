@@ -155,6 +155,7 @@ for (const b of dogBuckets) console.log(`  underdogs at ${b.lo * 100}–${b.hi *
 const pickRows = { over: [], under: [] };
 const pickMk = {};
 const allSides = [], allSidesMk = {}; // every candidate on the model's side (confidence buckets)
+const smashRows = [], dudRows = [];
 const idxBySeason = new Map();
 for (const day of days) {
   if (!idxBySeason.has(day.season)) idxBySeason.set(day.season, indexResults(day.data));
@@ -163,6 +164,10 @@ for (const day of days) {
     const x = modelSide(p0);
     const row = { x, res: gradeProp(x, day.data, idxBySeason.get(day.season)) };
     allSides.push(row);
+    if (row.res && !row.res.void) {
+      smashRows.push({ p: x.pSmash, y: row.res.actual >= x.smash });
+      if (x.dud != null) dudRows.push({ p: x.pDud, y: row.res.actual <= x.dud });
+    }
     (allSidesMk[x.market] ??= []).push(row);
   }
   for (const side of ['over', 'under']) for (const x of pk[side]) {
@@ -180,6 +185,13 @@ for (const [k, t] of Object.entries(pickTally)) console.log(`  ${k.padEnd(6)} ${
 for (const [k, t] of Object.entries(pickMarkets)) console.log(`    ${k.padEnd(12)} ${pf(t)}`);
 console.log(`  game winner ${((1 - favLost) * 100).toFixed(1)}%, total 5.5 side ${(totalHit * 100).toFixed(1)}%`);
 const byProb = probBuckets(allSides);
+const cal = (rows) => [[0, 0.1], [0.1, 0.2], [0.2, 0.3], [0.3, 0.45], [0.45, 1.01]].map(([lo, hi]) => {
+  const xs = rows.filter((r) => r.p >= lo && r.p < hi);
+  return { lo, hi, n: xs.length, pred: xs.length ? +(xs.reduce((s, r) => s + r.p, 0) / xs.length).toFixed(3) : null, hit: xs.length ? +(xs.filter((r) => r.y).length / xs.length).toFixed(3) : null };
+});
+const smashCal = cal(smashRows), dudCal = cal(dudRows);
+const fcal = (bs) => bs.filter((b) => b.n).map((b) => `${Math.round(b.pred * 100)}→${Math.round(b.hit * 100)}% (${b.n})`).join(' | ');
+console.log(`\nSmash: ${fcal(smashCal)}\nDud:   ${fcal(dudCal)}`);
 const byProbMarket = Object.fromEntries(Object.entries(allSidesMk).map(([k, v]) => [k, probBuckets(v)]));
 console.log('\nEvery prop on the model\'s side, by model chance: predicted → hit (n)');
 console.log('  all     ' + byProb.map((b) => `${Math.round(b.lo * 100)}%+: ${b.n ? `${(b.pred * 100).toFixed(0)}→${(b.hit * 100).toFixed(0)}% (${b.n})` : '–'}`).join(' | '));
@@ -191,7 +203,7 @@ if (FIT) {
     skaterGames: full.length, calib, bestR,
     games: { n: gameRows.length, winLL, naiveLL, homeRate, totMae, totNaive, favLost, dogBuckets },
     goalies: { starterRight: gRight / gTot, savesMae: gAbs / gN, naiveMae: gAbsNaive / gN },
-    picks: { days: days.length, ...pickTally, markets: pickMarkets, winner: 1 - favLost, total: totalHit, byProb, byProbMarket },
+    picks: { days: days.length, ...pickTally, markets: pickMarkets, winner: 1 - favLost, total: totalHit, byProb, byProbMarket, smash: smashCal, dud: dudCal },
   };
   const old = fs.existsSync(out) ? JSON.parse(fs.readFileSync(out)) : null;
   const strip = (o) => JSON.stringify({ ...o, fitted_at: undefined });

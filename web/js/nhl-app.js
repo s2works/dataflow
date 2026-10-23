@@ -638,9 +638,63 @@ function goaliesTable(games) {
   return table('goalies', cols, rows, { col: 'saves', asc: false });
 }
 
+// Smash / dud spots: the chance a prop at the usual book line clears it by a
+// wide margin (or falls well short). Same players as Top Picks.
+function smashTableNhl(id, rows, kind, idx) {
+  const smash = kind === 'smash';
+  const cols = [
+    { id: 'name', label: 'Player', cls: 'l', cell: (x) => `${esc(x.name)} <span class="pos">${x.pos}</span>` },
+    { id: 'game', label: 'Game', cls: 'l', cell: (x) => `${x.team} <span class="vs">${x.home ? 'vs' : '@'}</span> ${x.opp}` },
+    { id: 'prop', label: 'Line', cls: 'l', cell: (x) => `${x.line} ${MARKET_LABEL[x.market]}` },
+    { id: 'proj', label: 'Proj', cell: (x) => `<strong>${fmt(x.proj, x.market === 'saves' ? 1 : 2)}</strong>` },
+    { id: 'p', label: smash ? 'Over' : 'Under', title: 'Model chance of clearing the line on this side', cell: (x) => pct(smash ? x.p : 1 - x.p) },
+    {
+      id: 'ps', label: smash ? 'Smash' : 'Dud',
+      title: smash ? 'Chance of beating the line by 50%+ and by at least 2 shots/blocks, 1 point/goal/assist, 8 saves' : 'Chance of falling a third or more short (same minimum margins)',
+      bg: (x) => (smash ? `rgba(var(--good-rgb), ${Math.min(0.6, x.pSmash)})` : `rgba(var(--bad-rgb), ${Math.min(0.6, x.pDud)})`),
+      cell: (x) => `<strong>${pct(smash ? x.pSmash : x.pDud)}</strong> <span class="rk">${smash ? `${x.smash}+` : `≤ ${x.dud}`}</span>`,
+    },
+    {
+      id: 'res', label: 'Result', cls: 'c',
+      cell: (x) => {
+        const r = gradeProp({ ...x, side: 'over' }, data, idx);
+        if (!r) return '<span class="muted">pending</span>';
+        if (r.void) return '<span class="muted">void</span>';
+        const hit = smash ? r.actual >= x.smash : r.actual <= x.dud;
+        return `<span class="res ${hit ? 'res-hit' : 'res-miss'}">${hit ? '✓' : '✗'} ${r.actual}</span>`;
+      },
+    },
+  ];
+  return table(id, cols, rows, null);
+}
+
+function viewSmashNhl() {
+  const pk = nhlDayPicks(sport, data, history, state.week, { games: shownGames(), ...(state.lastN ? {} : { model }), ...(state.core === 'all' ? { coverage: null } : {}) });
+  let props = pk.props;
+  if (state.pos !== 'ALL') props = props.filter((x) => x.pos === state.pos);
+  const q = state.search.trim().toLowerCase();
+  if (q) props = props.filter((x) => x.name.toLowerCase().includes(q) || x.team.toLowerCase() === q);
+  const idx = indexResults(data);
+  const smash = [...props].sort((a, b) => b.pSmash - a.pSmash).slice(0, 20);
+  const dud = props.filter((x) => x.dud != null && x.pDud > 0).sort((a, b) => b.pDud - a.pDud).slice(0, 20);
+  const cal = (bs) => (bs ? bs.filter((b) => b.n >= 100).map((b) => `<span class="chip">model ${Math.round(b.pred * 100)}% → <strong>${Math.round(b.hit * 100)}%</strong></span>`).join('') : '');
+  const rec = record?.picks;
+  return `<div class="stack">
+      <div class="card"><h3>Smash spots</h3>
+        <p class="small muted">Props at the usual book line the model expects him to clear <em>by a lot</em>: 50%+ over the line and by at least 2 shots / 2 blocks / 1 point, goal or assist / 8 saves (e.g. 5+ shots on a 2.5 line, 2+ points on 0.5). A big edge can still be a narrow clear; this is the chance of a big night.</p>
+        <div class="chips">${cal(rec?.smash) ? `<span class="small muted">Backtest:</span>${cal(rec.smash)}` : ''}</div>
+        ${smashTableNhl('nhl-smash', smash, 'smash', idx)}</div>
+      <div class="card"><h3>Dud spots</h3>
+        <p class="small muted">The chance he falls a third or more short (lines of 1.5+ only; e.g. 1 or fewer shots on a 3.5 line): strong unders.</p>
+        <div class="chips">${cal(rec?.dud) ? `<span class="small muted">Backtest:</span>${cal(rec.dud)}` : ''}</div>
+        ${smashTableNhl('nhl-dud', dud, 'dud', idx)}</div>
+    </div>`;
+}
+
 function viewProps() {
   const games = shownGames();
   const skaters = state.propView === 'skaters';
+  const smashV = state.propView === 'smash';
   let rows = skaters ? coreOnly(skaterRows(games)) : [];
   if (state.pos !== 'ALL') rows = rows.filter((x) => x.p.pos === state.pos);
   const q = state.search.trim().toLowerCase();
@@ -648,15 +702,15 @@ function viewProps() {
   const rec = record?.calib;
   const calib = rec ? `Backtested: shots 2.5+ predicted 41% → actual ${pct(rec['sog_2.5']?.find((b) => b.lo === 0.35)?.act)}; 1+ point predicted 42% → ${pct(rec['pts_0.5']?.find((b) => b.lo === 0.35)?.act)}.` : '';
   return `<div class="toolbar">
-      ${seg('propView', [['skaters', 'Skaters'], ['goalies', 'Goalie saves']])}
-      ${skaters ? seg('pos', [['ALL', 'All'], ['C', 'C'], ['W', 'W'], ['D', 'D']]) : ''}
-      ${skaters ? coreSeg() : ''}
+      ${seg('propView', [['skaters', 'Skaters'], ['goalies', 'Goalie saves'], ['smash', 'Smash spots']])}
+      ${skaters || smashV ? seg('pos', [['ALL', 'All'], ['C', 'C'], ['W', 'W'], ['D', 'D']]) : ''}
+      ${skaters || smashV ? coreSeg() : ''}
       ${skaters ? `<span class="muted small">Model chance</span>${seg('propMin', MIN_PROB)}` : ''}
-      ${skaters ? `<input id="search" type="search" placeholder="Player or team…" value="${esc(state.search)}">` : ''}
+      ${skaters || smashV ? `<input id="search" type="search" placeholder="Player or team…" value="${esc(state.search)}">` : ''}
       <span class="spacer"></span>
-      <span class="muted">${skaters ? `Average (last season as a 25-game prior) × opponent vs position (shots, blocks), home ice, opposing goalie, ice-time trend. Chances use each stat's backtested spread. ${calib}` : 'Probable goalies (not confirmed: right ~64% of the time in backtests). Saves = shots against × save %.'} ${sampleNote()}</span>
+      <span class="muted">${smashV ? `Skaters and probable goalies at the usual book line (as in Top Picks). ${sampleNote()}` : skaters ? `Average (last season as a 25-game prior) × opponent vs position (shots, blocks), home ice, opposing goalie, ice-time trend. Chances use each stat's backtested spread. ${calib}` : 'Probable goalies (not confirmed: right ~64% of the time in backtests). Saves = shots against × save %.'}${smashV ? '' : ` ${sampleNote()}`}</span>
     </div>
-    <div class="card">${skaters ? propsTable('props', rows, { min: +state.propMin }) : goaliesTable(games)}</div>`;
+    ${state.propView === 'smash' ? viewSmashNhl() : `<div class="card">${skaters ? propsTable('props', rows, { min: +state.propMin }) : goaliesTable(games)}</div>`}`;
 }
 
 // -------------------------------------------------------------- DvP ----

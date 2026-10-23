@@ -18,6 +18,19 @@ import { nbAtLeast } from '../props.js';
 const halfLine = (avg) => Math.max(0.5, Math.round(avg - 0.5) + 0.5);
 const r3 = (x) => Math.round(x * 1000) / 1000;
 export const MARKET_LABEL = { sog: 'Shots', pts: 'Points', g: 'Goals', a: 'Assists', blk: 'Blocks', saves: 'Saves' };
+
+// "Smash" = beats the line by 50%+ and by at least this many; "dud" = falls a
+// third or more short by the same margin (saves: just the margin, either way).
+export const SMASH_MARGIN = { sog: 2, blk: 2, pts: 1, g: 1, a: 1, saves: 8 };
+function smashOf(market, line, proj, r) {
+  const m = SMASH_MARGIN[market];
+  const smash = market === 'saves' ? line + m : Math.max(line * 1.5, line + m);
+  const dud = market === 'saves' ? line - m : Math.min(line / 1.5, line - m);
+  // Counts: at least ceil(smash) (lines are x.5, so smash is usually x.5 too).
+  const pSmash = nbAtLeast(proj, r, Math.ceil(smash - 1e-9));
+  const pDud = dud >= 0 ? 1 - nbAtLeast(proj, r, Math.floor(dud) + 1) : 0;
+  return { smash: Math.ceil(smash - 1e-9), pSmash: r3(pSmash), dud: dud >= 0 ? Math.floor(dud) : null, pDud: r3(pDud) };
+}
 // What books usually offer (see the comment above).
 export const BOOK_COVERAGE = { forwards: 9, defense: 4, recentGames: 5 };
 
@@ -62,6 +75,7 @@ export function nhlDayPicks(sport, data, history, day, { games = null, top = 20,
       props.push({
         id: p.id, name: p.name, pos: p.pos, team: p.team, opp: r.opp, home: r.isHome, game_id: g.game_id,
         market: k, line, proj: r3(r.proj[k]), base: r3(r.base[k]), p: r3(pr), pBase: r3(pb), edge: r3(pr - pb),
+        ...smashOf(k, line, r.proj[k], mk.r),
         why: r.factors.filter((f) => Math.abs(k === 'sog' ? f.impactSog : f.impact) >= 0.02).map((f) => f.text).slice(0, 3),
       });
     }
@@ -82,6 +96,7 @@ export function nhlDayPicks(sport, data, history, day, { games = null, top = 20,
       props.push({
         id: s.id, name: s.name, pos: 'G', team, opp, home, game_id: g.game_id,
         market: 'saves', line, proj: r3(s.saves), base: r3(base), p: r3(pr), pBase: r3(pb), edge: r3(pr - pb),
+        ...smashOf('saves', line, s.saves, S.r),
         why: [`${s.sa.toFixed(1)} shots against × ${(s.sv * 100).toFixed(1)}%`, `probable: ${s.reason}`],
       });
     }

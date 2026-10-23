@@ -1247,7 +1247,7 @@ function boomTable(id, rows, kind) {
       sort: (x) => x.bust, bg: (x) => (x.bust == null ? 'transparent' : edgeColor((x.base.bust - x.bust) * 100, 12)),
       cell: (x) => `<strong>${x.bust == null ? '–' : pctFmt(x.bust)}</strong> <span class="rk">${pctFmt(x.base.bust)}</span>`,
     },
-    { id: 'line', label: 'Boom at', title: 'Points needed for a boom / bust week', cell: (x) => `${x.boomAt.toFixed(0)}+ <span class="rk">bust ≤ ${x.bustAt.toFixed(0)}</span>` },
+    { id: 'line', label: 'Boom at', title: 'Points needed for a boom / bust week', sort: (x) => x.boomAt, cell: (x) => `${x.boomAt.toFixed(0)}+ <span class="rk">bust ≤ ${x.bustAt.toFixed(0)}</span>` },
     { id: 'angles', label: 'Angles', cls: 'l wrap', sort: (x) => x.angles.length, cell: (x) => `<div class="chips">${x.angles.map(angleChip).join('') || '<span class="muted">–</span>'}</div>` },
   ];
   return table(id, cols, rows, { col: isBoom ? 'boom' : 'bust', asc: false });
