@@ -264,6 +264,19 @@ job has pulled them; a game without Vegas props gets **estimated** lines
 (the half-yard nearest the median outcome for his own average, compared with
 what that average implies), clearly marked *est.*
 
+**Vegas blend:** when a Vegas line exists, the projection used for the
+chance and edge is 50/50 our projection and the projection the book's
+price implies (the average whose chance of going over matches the book's
+no-vig price; `marketBlend` in `sports/nfl.js`). Books know about role
+changes and news we can't see; the model alone is shown in small print.
+
+**Returning teammates:** a teammate with a real role who missed the team's
+recent games and is expected back this week (books list his props, or he's
+on the injury report without an Out/Doubtful tag) takes back his share of
+carries/targets from the players whose averages were built without him, the
+reverse of "teammates out". Backtest (weeks 4+, 2024-26): PPR error 5.539 →
+5.508, the biggest single gain in the model.
+
 **Rank by** switches the lists between *Edge* (default; what the Scorecard
 grades), *Model chance* (the model's own probability for the side, ignoring
 the price) and *Projection vs line*; a market filter narrows to one prop type

@@ -11,7 +11,7 @@
 // Used by the Top Picks / Scorecard tabs and tools/nfl_picks.mjs, which saves
 // each game's picks until kickoff so the scorecard grades what was shown.
 
-import { overProb, fairOver, impliedProb, poissonAtLeast, medianOutcome } from './props.js';
+import { overProb, fairOver, impliedProb, poissonAtLeast, medianOutcome, impliedMean } from './props.js';
 
 export const NFL_MARKETS = { pass_yds: 'Pass Yds', pass_td: 'Pass TDs', rush_yds: 'Rush Yds', rec: 'Receptions', rec_yds: 'Rec Yds', scrim_yds: 'Rush + Rec Yds', anytime_td: 'Anytime TD' };
 const r3 = (x) => Math.round(x * 1000) / 1000;
@@ -34,6 +34,10 @@ export function projectableRows(sport, model, projector, games) {
 // Every prop we can price for these players. `props` = data.props.
 export function nflCandidates(sport, rows, propDist, props = {}) {
   const TD = sport.projection.td;
+  // Share of the model in the projection when a Vegas line exists (the rest is
+  // the projection the book's price implies): books know about role changes
+  // and news the model can't see.
+  const W = sport.projection.marketBlend;
   const passLam = (x) => TD.passCalib.mean + TD.passCalib.scale * (x - TD.passCalib.mean);
   const out = [];
   for (const { p, r } of rows) {
@@ -42,10 +46,11 @@ export function nflCandidates(sport, rows, propDist, props = {}) {
     const book = props[gid]?.players?.[p.id];
     for (const stat of Object.keys(NFL_MARKETS)) {
       const b = book?.[stat];
-      let line, pModel, pBook, src, proj, base;
+      let line, pModel, pBook, src, proj, base, raw = null;
       if (stat === 'anytime_td') {
         if (b?.over == null) continue; // only priced against a real book
-        line = 0.5; proj = r.td.lambda; base = r.td.baseLambda; pModel = r.td.anytime; pBook = impliedProb(b.over); src = 'vegas';
+        line = 0.5; proj = r.td.lambda; base = r.td.baseLambda; pBook = impliedProb(b.over); src = 'vegas';
+        pModel = W * r.td.anytime + (1 - W) * pBook;
       } else {
         proj = stat === 'pass_td' ? r.td.passLambda : r.proj[stat];
         base = stat === 'pass_td' ? (r.base.pass_td != null ? passLam(r.base.pass_td) : null) : r.base[stat];
@@ -65,13 +70,17 @@ export function nflCandidates(sport, rows, propDist, props = {}) {
           line = stat === 'pass_td' ? (base >= 1.2 ? 1.5 : 0.5) : halfLine(medianOutcome(propDist, stat, base));
           pBook = over(base, line); src = 'est';
         }
+        if (src === 'vegas') {
+          const implied = impliedMean((m) => over(m, line), line, pBook);
+          if (implied != null) { raw = proj; proj = W * proj + (1 - W) * implied; }
+        }
         pModel = over(proj, line);
       }
       if (pModel == null || pBook == null) continue;
       out.push({
         id: p.id, name: p.name, pos: p.pos, team: p.team, opp: r.opp, home: r.isHome, game_id: gid, week: r.game.week,
         market: stat, line, src, price: b ? { over: b.over ?? null, under: b.under ?? null, open: b.open ?? null } : null,
-        proj: r3(proj), base: r3(base), p: r3(pModel), pBook: r3(pBook), edge: r3(pModel - pBook),
+        proj: r3(proj), ...(raw != null ? { projModel: r3(raw) } : {}), base: r3(base), p: r3(pModel), pBook: r3(pBook), edge: r3(pModel - pBook),
         why: r.factors.filter((f) => Math.abs(f.impact) >= 0.03).slice(0, 3).map((f) => f.text ?? f.label),
       });
     }

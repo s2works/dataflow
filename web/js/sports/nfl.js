@@ -119,6 +119,9 @@ export default {
       rush_att: 'rush', rush_yds: 'rush', rush_td: 'rush',
     },
     tdStats: ['pass_td', 'rush_td', 'rec_td'],
+    // Model share when a Vegas prop line exists; the rest is the projection the
+    // book's price implies (see web/js/nflpicks.js).
+    marketBlend: 0.5,
     // PPR scoring used for projected fantasy points.
     scoring: { pass_yds: 0.04, pass_td: 4, int: -2, rush_yds: 0.1, rush_td: 6, rec: 1, rec_yds: 0.1, rec_td: 6 },
     // Regression: a factor observed over n games is trusted n / (n + k).
@@ -139,7 +142,7 @@ export default {
     // Injuries: share of a missing player's targets/carries that teammates in
     // the projection absorb (the rest goes to depth players), extra weight for
     // the same position, backup-QB hit on pass catchers, Questionable haircut.
-    injury: { absorb: 0.7, samePosWeight: 1.5, backupQb: 0.9, questionable: 0.95, cap: 1.6 },
+    injury: { absorb: 0.7, samePosWeight: 1.5, backupQb: 0.9, questionable: 0.95, cap: 1.6, returnWeight: 1, returnRecent: 3 },
     // Baseline: recency decay per game back, and last season's per-game
     // average counted as `priorGames` games (when he played minPriorGames+).
     baseline: { decay: 1, priorGames: 3, minPriorGames: 4, priorPerSnap: false },

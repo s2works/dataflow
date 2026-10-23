@@ -1,7 +1,7 @@
 import nfl from './sports/nfl.js';
 import { buildModel, edgeColor, rankColor, ordinal } from './engine.js';
 import { buildProjector, fetchForecasts, weatherLabel } from './projections.js';
-import { overProb, fairOver, impliedProb, poissonAtLeast, medianOutcome, outcomeQuantile, nbAtLeast } from './props.js';
+import { overProb, fairOver, impliedProb, poissonAtLeast, medianOutcome, outcomeQuantile, nbAtLeast, impliedMean } from './props.js';
 import { buildQ1, Q1_STATS } from './q1.js';
 import { buildGameModel } from './gamemodel.js';
 import { ANGLES, anglesFor, boomBust, angleEffect } from './boombust.js';
@@ -825,13 +825,18 @@ function propRows(rows) {
     for (const [stat, label] of Object.entries(PROP_STATS)) {
       const b = book[stat];
       if (!b || b.line == null) continue;
-      const proj = stat === 'pass_td' ? r.td.passLambda : r.proj[stat];
-      if (proj == null) continue;
-      const pOver = stat === 'pass_td' ? poissonAtLeast(proj, Math.floor(b.line) + 1) : overProb(propDist, stat, proj, b.line);
+      const projModel = stat === 'pass_td' ? r.td.passLambda : r.proj[stat];
+      if (projModel == null) continue;
+      const overAt = (m) => (stat === 'pass_td' ? poissonAtLeast(m, Math.floor(b.line) + 1) : overProb(propDist, stat, m, b.line));
       const fair = fairOver(b.over, b.under);
+      // Blend toward the projection the book's price implies (marketBlend).
+      const implied = fair != null ? impliedMean(overAt, b.line, fair) : null;
+      const W = sport.projection.marketBlend;
+      const proj = implied != null ? W * projModel + (1 - W) * implied : projModel;
+      const pOver = overAt(proj);
       const edge = pOver != null && fair != null ? pOver - fair : null;
       const median = stat === 'pass_td' ? proj : medianOutcome(propDist, stat, proj);
-      out.push({ p, r, stat, label, b, proj, median, pOver, fair, edge });
+      out.push({ p, r, stat, label, b, proj, projModel, median, pOver, fair, edge });
     }
   }
   return out;
@@ -849,7 +854,10 @@ function propsTable(id, rows) {
       cell: (x) => `${x.b.line}${x.b.open != null && x.b.open !== x.b.line ? ` <span class="rk">from ${x.b.open}</span>` : ''}`,
     },
     { id: 'odds', label: 'O / U', title: 'Over / under prices', cell: (x) => `<span class="small">${fmtMl(x.b.over)} / ${fmtMl(x.b.under)}</span>` },
-    { id: 'proj', label: 'Projection', title: 'Projected average', sort: (x) => x.proj, cell: (x) => x.proj.toFixed(x.stat === 'pass_td' || x.stat === 'rec' ? 2 : 1) },
+    {
+      id: 'proj', label: 'Projection', title: 'Projected average, blended 50/50 with the projection the book’s price implies (model alone in small print)', sort: (x) => x.proj,
+      cell: (x) => { const d = x.stat === 'pass_td' || x.stat === 'rec' ? 2 : 1; return `${x.proj.toFixed(d)} <span class="rk">model ${x.projModel.toFixed(d)}</span>`; },
+    },
     {
       id: 'median', label: 'Median', title: 'Typical outcome. Averages run above medians for yardage (a few big games), and books set lines near the median, so this is what to compare to the line.',
       sort: (x) => x.median, cell: (x) => `<strong>${x.median.toFixed(x.stat === 'pass_td' || x.stat === 'rec' ? 2 : 1)}</strong>`,
@@ -1011,7 +1019,10 @@ function nflPicksTable(id, rows, idx) {
         ? `${lineFarOff(x) ? '<span class="badge alert" title="Our projection is 35%+ (and 8+ yards / 1+ catch) away from the Vegas line. Books usually know something the model doesn’t (role change, injury news): check before trusting this edge.">⚠</span> ' : ''}<span class="badge pick">Vegas</span> <span class="small">${fmtMl(x.side === 'under' ? x.price?.under : x.price?.over)}</span>${x.price?.open != null && x.price.open !== x.line ? ` <span class="rk">from ${x.price.open}</span>` : ''}`
         : '<span class="badge alert" title="No Vegas line: estimated from his own average">est.</span>'),
     },
-    { id: 'proj', label: 'Proj', title: 'Model projection (his average in small print)', cell: (x) => `<strong>${fmt(x.proj, d(x))}</strong> <span class="rk">avg ${fmt(x.base, d(x))}</span>` },
+    {
+      id: 'proj', label: 'Proj', title: 'Projection (his average in small print). Against a Vegas line it is blended 50/50 with the projection the book’s price implies; hover for the model alone.',
+      cell: (x) => `<strong ${x.projModel != null ? `title="Model alone ${fmt(x.projModel, d(x))}, blended with Vegas"` : ''}>${fmt(x.proj, d(x))}</strong> <span class="rk">${x.projModel != null ? `model ${fmt(x.projModel, d(x))} · ` : ''}avg ${fmt(x.base, d(x))}</span>`,
+    },
     { id: 'p', label: 'Model', title: 'Model chance this side hits (fair odds)', cell: (x) => { const q = x.side === 'under' ? 1 - x.p : x.p; return `<strong>${pctFmt(q)}</strong> <span class="rk">${fairOdds(q)}</span>`; } },
     { id: 'pb', label: 'Book', title: 'Vegas: the book’s chance with the vig removed. est.: what his average alone implies at this line', cell: (x) => pctFmt(x.side === 'under' ? 1 - x.pBook : x.pBook) },
     {

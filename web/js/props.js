@@ -67,6 +67,19 @@ export function nbAtLeast(m, r, k) {
   return 1 - cdf;
 }
 
+// The projection a book's price implies: the mean whose P(over line) matches
+// the book's no-vig chance (bisection on a monotone function). `overFn(m)`
+// gives P(over) for a projection m.
+export function impliedMean(overFn, line, pBook) {
+  if (!(pBook > 0 && pBook < 1)) return null;
+  let lo = Math.max(0.01, line * 0.1), hi = Math.max(line * 5, 3);
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    if (overFn(mid) < pBook) lo = mid; else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
 // P(X >= k) for a Poisson with mean lam (pass TDs).
 export function poissonAtLeast(lam, k) {
   let term = Math.exp(-lam), cdf = 0;

@@ -17,7 +17,7 @@ const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 const regress = (m, n, k) => 1 + (m - 1) * (n / (n + k));
 const pct = (x) => `${x >= 0 ? '+' : '−'}${Math.abs(x * 100).toFixed(0)}%`;
 
-export function buildProjector(sport, model, { history = [], weather = new Map(), disabled = new Set() } = {}) {
+export function buildProjector(sport, model, { history = [], weather = new Map(), disabled = new Set(), expected = null } = {}) {
   const cfg = sport.projection;
   const data = model.data;
   const beforeWeek = model.beforeWeek;
@@ -163,6 +163,19 @@ export function buildProjector(sport, model, { history = [], weather = new Map()
     if (!byTeam.has(p.team)) byTeam.set(p.team, []);
     byTeam.get(p.team).push(p);
   }
+  // Team game ids, most recent first (for "missed recent games").
+  const team_games_by = new Map();
+  for (const r of [...data.team_games].filter((r) => r.week < beforeWeek).sort((a, b) => b.week - a.week)) {
+    if (!team_games_by.has(r.team)) team_games_by.set(r.team, []);
+    team_games_by.get(r.team).push(r.game_id);
+  }
+  // Expected to play this week: listed by the books, or on the injury report
+  // without an Out/Doubtful tag (`expected` overrides, for backtests).
+  const listed = new Set();
+  for (const g of data.schedule.filter((x) => x.week === beforeWeek)) {
+    for (const id of Object.keys(data.props?.[g.game_id]?.players ?? {})) listed.add(id);
+  }
+  const expectedActive = (p) => (expected ? expected.has(p.id) : listed.has(p.id) || (report.has(p.id) && !isOut(p)));
   const sampleGames = (p) => (logs.get(p.id) || []).slice(0, p.n).map((r) => r.game_id);
   const playedFor = (p) => new Set((logs.get(p.id) || []).filter((r) => r.team === p.team).map((r) => r.game_id));
   const meaningful = (p) => (p.avg.tgt || 0) >= 2 || (p.avg.rush_att || 0) >= 4 || (p.pos === 'QB' && p.avg.pass_att >= 15);
@@ -243,7 +256,42 @@ export function buildProjector(sport, model, { history = [], weather = new Map()
         }
       }
     }
-    const ctx = { missing, qbOut, newQb, extra, available };
+
+    // Returning teammates: a real role, missed the team's recent games, and
+    // expected to play this week (books list his props, or he's on the report
+    // without an Out/Doubtful tag). Teammates' averages were built partly
+    // without him, so the share he takes back comes off them: the reverse of
+    // the redistribution above.
+    const less = new Map();
+    const recentTeam = (team_games_by.get(team) || []).slice(0, I.returnRecent);
+    const returning = roster.filter((r) => {
+      if (r.pos === 'QB' || !expectedActive(r) || isOut(r)) return false;
+      const played = playedFor(r);
+      return recentTeam.length >= 2 && recentTeam.filter((g) => !played.has(g)).length >= 2
+        && ((r.avg.rush_att || 0) >= 6 || (r.avg.tgt || 0) >= 3);
+    });
+    for (const m of returning) {
+      const mPlayed = playedFor(m);
+      for (const [stat, eligible, min] of [['tgt', () => true, 1], ['rush_att', (p) => p.pos === 'RB', 2]]) {
+        const vol = m.avg[stat] || 0;
+        if (vol < min) continue;
+        const pool = available.filter((p) => p !== m && p.pos !== 'QB' && eligible(p) && (p.avg[stat] || 0) > 0);
+        const w = (p) => p.avg[stat] * (p.pos === m.pos ? I.samePosWeight : 1);
+        const total = pool.reduce((s, p) => s + w(p), 0);
+        if (!total) continue;
+        for (const p of pool) {
+          const sg = sampleGames(p);
+          const without = sg.length ? sg.filter((id) => !mPlayed.has(id)).length / sg.length : 0;
+          const cut = vol * I.absorb * I.returnWeight * (w(p) / total) * without;
+          if (cut < 0.05) continue;
+          const e = less.get(p.id) ?? { tgt: 0, rush_att: 0, from: new Set() };
+          e[stat] += cut;
+          e.from.add(m.name);
+          less.set(p.id, e);
+        }
+      }
+    }
+    const ctx = { missing, qbOut, newQb, extra, available, returning, less };
     contexts.set(team, ctx);
     return ctx;
   }
@@ -536,6 +584,17 @@ export function buildProjector(sport, model, { history = [], weather = new Map()
         factors.push({
           id: 'usage', label: 'Teammates out',
           text: `${[...e.from].join(', ')} out → ${bits.join(', ')}/G`,
+          m: (k) => (['tgt', 'rec', 'rec_yds', 'rec_td'].includes(k) ? rec : ['rush_att', 'rush_yds', 'rush_td'].includes(k) ? rush : 1),
+        });
+      }
+      const back = ctx.less.get(pl.id);
+      if (back) {
+        const rec = base.tgt ? Math.max(0.5, (base.tgt - back.tgt) / base.tgt) : 1;
+        const rush = base.rush_att ? Math.max(0.5, (base.rush_att - back.rush_att) / base.rush_att) : 1;
+        const bits = [back.tgt >= 0.1 && `−${back.tgt.toFixed(1)} tgt`, back.rush_att >= 0.1 && `−${back.rush_att.toFixed(1)} car`].filter(Boolean);
+        factors.push({
+          id: 'returning', label: 'Teammate back',
+          text: `${[...back.from].join(', ')} back → ${bits.join(', ')}/G`,
           m: (k) => (['tgt', 'rec', 'rec_yds', 'rec_td'].includes(k) ? rec : ['rush_att', 'rush_yds', 'rush_td'].includes(k) ? rush : 1),
         });
       }

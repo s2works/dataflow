@@ -18,7 +18,7 @@ const { buildModel } = await load('js/engine.js');
 const { buildProjector } = await load('js/projections.js');
 
 const cfg = sport.projection;
-const FACTORS = ['opp', 'form', 'home', 'div', 'weather', 'vegas', 'script', 'rest', 'hist', 'usage', 'qb', 'status'];
+const FACTORS = ['opp', 'form', 'home', 'div', 'weather', 'vegas', 'script', 'rest', 'hist', 'usage', 'returning', 'qb', 'status'];
 const readSeason = (s) => {
   const f = path.join(WEB, 'data', 'nfl', `${s}.json`);
   return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f)) : null;
@@ -42,7 +42,9 @@ for (const season of seasons) {
       const a = actual.get(p.id);
       if (g && a) items.push({ p, g, row: a, actual: fpts(a, cfg.stats[p.pos]) });
     }
-    weeks.push({ model, history, items });
+    // Who played that week stands in for "expected to play" (live: listed by
+    // the books or on the injury report).
+    weeks.push({ model, history, items, expected: new Set(actual.keys()) });
   }
 }
 
@@ -50,7 +52,7 @@ function evaluate(disabled) {
   let abs = 0, sq = 0, n = 0;
   const results = [];
   for (const wk of weeks) {
-    const pr = buildProjector(sport, wk.model, { history: wk.history, disabled: new Set(disabled) });
+    const pr = buildProjector(sport, wk.model, { history: wk.history, disabled: new Set(disabled), expected: wk.expected });
     for (const it of wk.items) {
       const r = pr.project(it.p, it.g);
       abs += Math.abs(r.projFpts - it.actual);
@@ -91,7 +93,7 @@ function tdEval(disabled, probOf) {
   let ll = 0, brier = 0, n = 0;
   const out = [];
   for (const wk of weeks) {
-    const pr = buildProjector(sport, wk.model, { history: wk.history, disabled: new Set(disabled) });
+    const pr = buildProjector(sport, wk.model, { history: wk.history, disabled: new Set(disabled), expected: wk.expected });
     for (const it of wk.items) {
       const a = it.row;
       const r = pr.project(it.p, it.g);
@@ -127,7 +129,7 @@ for (const [lo, hi] of [[0, 0.1], [0.1, 0.2], [0.2, 0.3], [0.3, 0.45], [0.45, 1]
 {
   const pr = [];
   for (const wk of weeks) {
-    const proj = buildProjector(sport, wk.model, { history: wk.history });
+    const proj = buildProjector(sport, wk.model, { history: wk.history, expected: wk.expected });
     for (const it of wk.items) {
       if (it.p.pos !== 'QB') continue;
       const lam = proj.project(it.p, it.g).td.passLambda;
@@ -151,8 +153,8 @@ for (const [lo, hi] of [[0, 0.1], [0.1, 0.2], [0.2, 0.3], [0.3, 0.45], [0.45, 1]
   const ftd = (disabled) => {
     const res = { game: [], team: [] };
     for (const wk of weeks) {
-      const pr = buildProjector(sport, wk.model, { history: wk.history });
-      const ft = buildFirstTd(sport, wk.model, pr, { history: wk.history, disabled: new Set(disabled) });
+      const pr = buildProjector(sport, wk.model, { history: wk.history, expected: wk.expected });
+      const ft = buildFirstTd(sport, wk.model, pr, { history: wk.history, disabled: new Set(disabled), expected: wk.expected });
       const games = new Map(wk.items.map((it) => [it.g.game_id, it.g]));
       const rows = new Map(wk.model.data.player_games.filter((r) => r.week === wk.model.beforeWeek).map((r) => [`${r.id}|${r.game_id}`, r]));
       for (const g of games.values()) {
