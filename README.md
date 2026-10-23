@@ -218,6 +218,15 @@ receiving yards for every key player, with the median and likely range (middle
   players, rarer for stars). Receptions use a negative binomial (r = 8), which
   backtested best: P(1+) predicted 41% → actual 39%, 59% → 61%, 75% → 73%.
 
+### Model picks (Matchups)
+
+A **Model picks** table at the top of Matchups lists the game model's
+winner (with Vegas's favorite next to it), its spread side and its total
+side for every game, graded ✓/✗ once final; rows where the model picks the
+Vegas underdog are highlighted, and each card says *Model pick: TEAM %*.
+Backtest: the model's favorite won 63% vs 67% for Vegas's; ~47% against the
+spread and ~49% on totals. A second opinion on games, not better than Vegas.
+
 ### Player props vs projection
 
 **Projections → Props vs projection** lists each prop line (pass yds, pass

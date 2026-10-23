@@ -399,6 +399,7 @@ function viewWeek() {
   });
   return `<div class="toolbar"><strong>Week preview</strong>${seg('weekSort', [['time', 'By kickoff'], ['upset', 'By upset chance']])}<span class="muted">Model vs Vegas, top projected players and biggest matchup edges. Click a game for everything. ${sampleNote()}</span></div>
     ${upsetSummary()}
+    ${modelPicksCard(weekGames())}
     <div class="grid games">${cards.join('')}</div>`;
 }
 
@@ -414,11 +415,56 @@ function upsetInfo(g) {
   const dog = dogHome ? pH : 1 - pH;
   const modelDog = dogHome ? p.pHome : 1 - p.pHome;
   const modelPick = mkt != null && (p.pHome > 0.5) !== (mkt > 0.5) && Math.abs(p.pHome - 0.5) > 0.01;
-  return { dogTeam, dog, modelDog, modelPick, source: mkt != null ? 'Vegas' : 'model' };
+  return { dogTeam, dog, modelDog, modelPick, source: mkt != null ? 'Vegas' : 'model', modelTeam: p.pHome >= 0.5 ? g.home : g.away, modelP: Math.max(p.pHome, 1 - p.pHome) };
 }
 
 const isAlert = (u) => !u.modelPick && u.dog >= 0.4 && (u.source !== 'Vegas' || u.modelDog >= 0.4);
 const MODEL_PICK_NOTE = (u) => `The model makes ${u.dogTeam} the favorite (${pctFmt(u.modelDog)}) while Vegas has them at ${pctFmt(u.dog)}. A gap this size often means the market knows something the stats don't yet (a QB's status before the injury report, a lineup change), so check the news.`;
+
+// Model picks for the week: winner, spread and total next to Vegas, graded
+// once games are final.
+function modelPicksCard(games) {
+  if (!games.length) return '';
+  const res = (ok) => (ok == null ? '<span class="muted">–</span>' : ok === 'push' ? '<span class="muted">push</span>' : `<span class="res ${ok ? 'res-hit' : 'res-miss'}">${ok ? '✓' : '✗'}</span>`);
+  const t = { w: [0, 0], ats: [0, 0], ou: [0, 0] };
+  const rows = games.map((g) => {
+    const p = gameModel.predict(g);
+    const mkt = g.home_moneyline != null && g.away_moneyline != null ? fairOver(g.home_moneyline, g.away_moneyline) : null;
+    const pick = p.pHome >= 0.5 ? g.home : g.away, pickP = Math.max(p.pHome, 1 - p.pHome);
+    const fav = mkt == null ? null : mkt >= 0.5 ? g.home : g.away, favP = mkt == null ? null : Math.max(mkt, 1 - mkt);
+    const disagree = fav != null && fav !== pick;
+    const final = g.home_score != null;
+    const margin = final ? g.home_score - g.away_score : null;
+    // Spread: nflverse spread_line = points the home team is favored by.
+    let ats = '–', atsOk = null;
+    if (g.spread_line != null && p.pHomeCover != null) {
+      const home = p.pHomeCover >= 0.5;
+      const sp = g.spread_line;
+      ats = `${home ? g.home : g.away} ${home ? (sp > 0 ? `−${sp}` : `+${-sp}`) : (sp > 0 ? `+${sp}` : `−${-sp}`)} <span class="rk">${pctFmt(home ? p.pHomeCover : 1 - p.pHomeCover)}</span>`;
+      if (final) { const d = margin - sp; atsOk = d === 0 ? 'push' : (d > 0) === home; }
+    }
+    let ou = '–', ouOk = null;
+    if (g.total_line != null && p.pOver != null) {
+      const over = p.pOver >= 0.5;
+      ou = `${over ? 'Over' : 'Under'} ${g.total_line} <span class="rk">${pctFmt(over ? p.pOver : 1 - p.pOver)} · proj ${p.total.toFixed(1)}</span>`;
+      if (final) { const tot = g.home_score + g.away_score; ouOk = tot === g.total_line ? 'push' : (tot > g.total_line) === over; }
+    }
+    const winOk = final ? (margin > 0 ? g.home : g.away) === pick : null;
+    for (const [k, v] of [['w', winOk], ['ats', atsOk], ['ou', ouOk]]) if (v === true || v === false) { t[k][0] += v ? 1 : 0; t[k][1]++; }
+    return `<tr${disagree ? ' style="background:rgba(234,179,8,.12)"' : ''}><td class="l"><a href="#matchups/${esc(g.game_id)}">${g.away} @ ${g.home}</a></td>
+      <td class="l"><strong>${pick}</strong> ${pctFmt(pickP)} ${disagree ? '<span class="badge alert" title="The model picks the Vegas underdog">vs Vegas</span>' : ''}</td>
+      <td class="l">${fav ? `${fav} ${pctFmt(favP)}` : '<span class="muted">–</span>'}</td><td>${res(winOk)}</td>
+      <td class="l">${ats}</td><td>${res(atsOk)}</td><td class="l">${ou}</td><td>${res(ouOk)}</td></tr>`;
+  }).join('');
+  const rec = (x) => (x[1] ? ` <strong>${x[0]}-${x[1] - x[0]}</strong>` : '');
+  const r = gameRecord;
+  const note = r ? `Backtest (${r.games} games): the model's favorite won ${pctFmt(1 - r.upsets.model.rate)} of games vs ${pctFmt(1 - r.upsets.vegas.rate)} for the Vegas favorite; against the spread it's ~${pctFmt(r.ats['0'][0] / (r.ats['0'][0] + r.ats['0'][1]))} and on totals ~${pctFmt(r.ou['0'][0] / (r.ou['0'][0] + r.ou['0'][1]))}. A second opinion, not better than Vegas on game lines: lean on it where it disagrees for a reason you can see (injuries, weather) and on player props, where it has an edge.` : '';
+  return `<div class="card" style="margin-bottom:12px"><h3>Model picks</h3>
+    <div class="tbl-wrap"><table>
+      <tr><th class="l">Game</th><th class="l">Model winner</th><th class="l">Vegas favorite</th><th>${rec(t.w)}</th><th class="l">Spread (model)</th><th>${rec(t.ats)}</th><th class="l">Total (model)</th><th>${rec(t.ou)}</th></tr>
+      ${rows}</table></div>
+    <p class="small muted">Highlighted = the model picks the Vegas underdog. ${note}</p></div>`;
+}
 
 function upsetLine(g) {
   if (g.home_score != null) {
@@ -431,7 +477,7 @@ function upsetLine(g) {
     u.modelPick ? `<span class="badge pick" title="${esc(MODEL_PICK_NOTE(u))}">Model upset pick</span>` : '',
     isAlert(u) ? `<span class="badge alert" title="Both Vegas and the model give the underdog 40%+: roughly 2 in 5.">Upset alert</span>` : '',
   ].join('');
-  return `<div class="upset" style="--u:${Math.min(1, u.dog / 0.5).toFixed(2)}"><span>Upset chance: <strong>${u.dogTeam} ${pctFmt(u.dog)}</strong> <span class="rk">${u.source}${u.source === 'Vegas' ? ` · model ${pctFmt(u.modelDog)}` : ''}</span></span>${badges}</div>`;
+  return `<div class="upset" style="--u:${Math.min(1, u.dog / 0.5).toFixed(2)}"><span>Model pick: <strong>${u.modelTeam} ${pctFmt(u.modelP)}</strong></span><span>Upset chance: <strong>${u.dogTeam} ${pctFmt(u.dog)}</strong> <span class="rk">${u.source}${u.source === 'Vegas' ? ` · model ${pctFmt(u.modelDog)}` : ''}</span></span>${badges}</div>`;
 }
 
 function upsetSummary() {
