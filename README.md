@@ -465,6 +465,19 @@ days, each projected from earlier games only, ~21,600 skater-games):
   team or the opponent on a back-to-back and 3+ days of rest (no change in
   error), his own home/road split (worse at every regression strength) and
   hot/cold last-5 form (worse).
+* **Play-by-play (new):** the pipeline also reads fastRhockey's play-by-play
+  (who's on the ice, expected goals per shot) for each player's shot
+  attempts, expected goals and power-play ice time, and each team's attempts
+  and expected goals for/against. Kept after backtests: goals from expected
+  goals × his (regressed) finishing, *team goals tonight* (game model's
+  expected goals for his team vs its average), a light power-play-role
+  trend, and expected goals in the game model's team ratings. Log loss
+  before → after: goals 0.4156 → 0.4097, points 0.4527 → 0.4502, game win %
+  0.6835 → 0.6823. Shots from attempts added nothing (left at 0).
+* **Confidence:** every prop on the model's side, by the model's chance:
+  60-65% hit 63%, 65-70% hit 67% (NFL on estimated lines: 62% / 69%). Top
+  Picks has a *Model chance* filter (55% / 60% / 65%+) showing these
+  backtest hit rates for the selected market.
 * **Goalies:** probable starter = most starts in the last 10, or the backup
   on the second night of a back-to-back if the starter played yesterday:
   right 64% of the time (vs 57% for "most recent starts"). Saves = shots

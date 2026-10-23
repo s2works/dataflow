@@ -21,6 +21,7 @@ const { default: sport } = await load('js/sports/nfl.js');
 const { buildModel } = await load('js/engine.js');
 const { buildProjector } = await load('js/projections.js');
 const { projectableRows, nflCandidates, topPicks, nflResults, gradeNflPick, tallyPicks } = await load('js/nflpicks.js');
+const { probBuckets, modelSide } = await load('js/rankpicks.js');
 
 const dir = path.join(WEB, 'data', 'nfl');
 const read = (f) => (fs.existsSync(f) ? JSON.parse(fs.readFileSync(f)) : null);
@@ -81,6 +82,7 @@ else console.log('picks unchanged');
 // ---- backtest ------------------------------------------------------------------
 if (process.argv.includes('--backtest')) {
   const all = { over: [], under: [] }, mk = {};
+  const allSides = [], allSidesMk = {};
   let weeks = 0;
   for (const s of [...seasons].sort()) {
     const d = readSeason(s), prev = readSeason(s - 1);
@@ -89,7 +91,15 @@ if (process.argv.includes('--backtest')) {
     for (let w = 4; w <= Math.min(18, d.last_week_played); w++) {
       const games = d.schedule.filter((g) => g.week === w && g.game_type === 'REG' && g.home_score != null);
       if (!games.length) continue;
-      const picks = topPicks(weekCandidates(d, hist, w, games));
+      const cands = weekCandidates(d, hist, w, games);
+      for (const c of cands) {
+        if (c.market === 'anytime_td') continue;
+        const x = modelSide(c);
+        const row = { x, res: gradeNflPick(x, idx) };
+        allSides.push(row);
+        (allSidesMk[x.market] ??= []).push(row);
+      }
+      const picks = topPicks(cands);
       weeks++;
       for (const side of ['over', 'under']) for (const x of picks[side]) {
         const row = { x, res: gradeNflPick(x, idx) };
@@ -105,7 +115,13 @@ if (process.argv.includes('--backtest')) {
   for (const [k, x] of Object.entries(t)) console.log(`  ${k.padEnd(6)} ${pf(x)}`);
   for (const [k, x] of Object.entries(markets)) console.log(`    ${k.padEnd(16)} ${pf(x)}`);
   const recFile = path.join(dir, 'picks_record.json');
-  const body = { weeks, ...t, markets };
+  const byProb = probBuckets(allSides);
+  const byProbMarket = Object.fromEntries(Object.entries(allSidesMk).map(([k, v]) => [k, probBuckets(v)]));
+  const fb = (bs) => bs.map((b) => `${Math.round(b.lo * 100)}%+: ${b.n ? `${(b.pred * 100).toFixed(0)}→${(b.hit * 100).toFixed(0)}% (${b.n})` : '–'}`).join(' | ');
+  console.log('\nEvery prop on the model\'s side, by model chance: predicted → hit (n)');
+  console.log(`  all        ${fb(byProb)}`);
+  for (const [k, bs] of Object.entries(byProbMarket)) console.log(`  ${k.padEnd(10)} ${fb(bs)}`);
+  const body = { weeks, ...t, markets, byProb, byProbMarket };
   const old = read(recFile);
   if (old && JSON.stringify({ ...old, fitted_at: undefined }) === JSON.stringify({ ...body, fitted_at: undefined })) console.log('picks_record.json unchanged');
   else { fs.writeFileSync(recFile, JSON.stringify({ fitted_at: new Date().toISOString().slice(0, 10), ...body }) + '\n'); console.log(`wrote ${path.relative(process.cwd(), recFile)}`); }

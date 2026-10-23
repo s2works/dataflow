@@ -8,7 +8,7 @@ import { ANGLES, anglesFor, boomBust, angleEffect } from './boombust.js';
 import { buildFirstTd } from './firsttd.js';
 import { gameFilter } from './gamefilter.js';
 import { fmtOdds, fairOdds, juiceLabel, mountOddsSwitch } from './odds.js';
-import { rankPicks, RANK_LABELS } from './rankpicks.js';
+import { rankPicks, RANK_LABELS, MIN_PROB } from './rankpicks.js';
 import { NFL_MARKETS, projectableRows, nflCandidates, topPicks, nflResults, gradeNflPick, tallyPicks } from './nflpicks.js';
 
 const ANGLE_LABELS = Object.fromEntries(ANGLES.map((a) => [a.id, a.label]));
@@ -39,6 +39,7 @@ const state = {
   pickLines: 'all', // Top Picks: 'all' lines or 'vegas' only
   pickRank: 'edge', // Top Picks ranking (rankpicks.js)
   pickMarket: 'all',
+  pickMin: '0', // Top Picks: minimum model chance for the side
   weekSort: 'time',
   projView: 'proj',
 };
@@ -970,9 +971,17 @@ function lineMovement(g) {
 const fmtMl = fmtOdds;
 
 // -------------------------------------------------------- top picks ----
+// Backtest: hit rate of every prop by the model's chance for its side.
+function confidenceLine(rec, market, label) {
+  const bs = (market !== 'all' && rec?.byProbMarket?.[market]) || rec?.byProb;
+  if (!bs) return '';
+  const cells = bs.filter((b) => b.n >= 20).map((b) => `<span class="chip" title="${b.n} props">model ${Math.round(b.lo * 100)}${b.hi > 1 ? '+' : `–${Math.round(b.hi * 100)}`}% → <strong>hit ${Math.round(b.hit * 100)}%</strong></span>`).join('');
+  return cells ? `<div class="chips" style="margin-top:6px"><span class="small muted">Backtest${market !== 'all' ? ` (${label})` : ''}, every prop on the model's side:</span>${cells}</div>` : '';
+}
+
 // The week's picks: games saved before kickoff come from picks_<season>.json
 // (what the Scorecard grades); any other game is computed live here.
-const rankedView = () => state.pickRank !== 'edge' || state.pickMarket !== 'all';
+const rankedView = () => state.pickRank !== 'edge' || state.pickMarket !== 'all' || +state.pickMin > 0;
 
 function weekPicks() {
   // Re-ranked views use every candidate, computed live (saved games only keep
@@ -988,7 +997,7 @@ function weekPicks() {
   const nVegas = cands.filter((x) => x.src === 'vegas').length;
   let pool = state.pickLines === 'vegas' ? cands.filter((x) => x.src === 'vegas') : cands;
   if (state.pickMarket !== 'all') pool = pool.filter((x) => x.market === state.pickMarket);
-  return { ...(rankedView() ? rankPicks(pool, { by: state.pickRank }) : topPicks(pool)), nSaved: Object.keys(saved).length, nLive: liveGames.length, nVegas };
+  return { ...(rankedView() ? rankPicks(pool, { by: state.pickRank, minProb: +state.pickMin }) : topPicks(pool)), nSaved: Object.keys(saved).length, nLive: liveGames.length, nVegas };
 }
 
 const resBadge = (res) => (!res ? '<span class="muted">pending</span>'
@@ -1048,9 +1057,11 @@ function viewPicks() {
   return `<div class="toolbar"><strong>Week ${state.week} top picks</strong>
       ${seg('pickLines', [['all', 'All lines'], ['vegas', `Vegas lines only (${pk.nVegas})`]])}
       <span class="muted small">Rank by</span>${seg('pickRank', Object.entries(RANK_LABELS))}
-      ${seg('pickMarket', [['all', 'All'], ...Object.entries(NFL_MARKETS)])}</div>
-    <div class="toolbar"><span class="muted">${rankedView() ? `<span class="badge alert">Re-ranked</span> By ${RANK_LABELS[state.pickRank].toLowerCase()}${state.pickMarket !== 'all' ? `, ${NFL_MARKETS[state.pickMarket]} only` : ''}, computed live; the Scorecard grades the default list (all markets, by edge). ` : ''}${games_.active() ? '<span class="badge alert">Filtered</span> Ranked within the selected games only (the Scorecard grades the full-week list). ' : ''}${rankedView() ? '' : pk.nSaved ? `${pk.nSaved} games saved before kickoff (these count on the Scorecard)${pk.nLive ? `, ${pk.nLive} computed live` : ''}.` : 'Computed live (this week was before the scorecard started).'} ${sampleNote()}</span></div>
+      ${seg('pickMarket', [['all', 'All'], ...Object.entries(NFL_MARKETS)])}
+      <span class="muted small">Model chance</span>${seg('pickMin', MIN_PROB)}</div>
+    <div class="toolbar"><span class="muted">${rankedView() ? `<span class="badge alert">Re-ranked</span> By ${RANK_LABELS[state.pickRank].toLowerCase()}${state.pickMarket !== 'all' ? `, ${NFL_MARKETS[state.pickMarket]} only` : ''}${+state.pickMin > 0 ? `, model ${Math.round(state.pickMin * 100)}%+ only` : ''}, computed live; the Scorecard grades the default list (all markets, by edge). ` : ''}${games_.active() ? '<span class="badge alert">Filtered</span> Ranked within the selected games only (the Scorecard grades the full-week list). ' : ''}${rankedView() ? '' : pk.nSaved ? `${pk.nSaved} games saved before kickoff (these count on the Scorecard)${pk.nLive ? `, ${pk.nLive} computed live` : ''}.` : 'Computed live (this week was before the scorecard started).'} ${sampleNote()}</span></div>
     <div class="card upset-summary">Top 20 overs: ${wl(tO)} · Top 20 unders: ${wl(tU)}
+      ${confidenceLine(picksRecord, state.pickMarket, NFL_MARKETS[state.pickMarket])}
       <div class="small muted">${lineNote} Edge = the model's chance minus the book's. To beat ${juiceLabel()} juice a side needs 52.4%+. Ranked across all props: yards, receptions, pass TDs, and anytime TD when a book prices it.</div></div>
     <div class="stack">
       <div class="card"><h3>Top 20 overs</h3>${nflPicksTable('nfl-pick-over', pk.over, idx)}</div>

@@ -49,7 +49,7 @@ export default {
 
   derive(a) { return a; },
 
-  rawColumns: ['g', 'a', 'pts', 'sog', 'blk', 'hits', 'ppg', 'pim', 'toi'],
+  rawColumns: ['g', 'a', 'pts', 'sog', 'blk', 'hits', 'ppg', 'pim', 'toi', 'att', 'ixg', 'pptoi'],
 
   // ---- projections (all knobs tuned by tools/nhl_backtest.mjs) ---------------
   projection: {
@@ -78,9 +78,18 @@ export default {
     split: { weight: 0, k: 20 }, // his own home/away split, regressed by venue games
     form: { weight: 0, games: 5 }, // last N games vs baseline
     toiTrend: { weight: 0.6, games: 3, cap: 0.2 },
+    // Play-by-play (pipeline/build_nhl.py): shots from shot attempts, goals
+    // from expected goals, power-play role. Weights tuned by nhl_backtest.
+    // Kept: goals from expected goals (goal log loss 0.4156 → 0.4100), team
+    // goals tonight (points/goals/assists), a light power-play trend.
+    // Shots from attempts added nothing over the shots average (weight 0).
+    attempts: { weight: 0, k: 60 },
+    xg: { weight: 0.85, k: 10 },
+    pp: { weight: 0.2, games: 5, c: 1, sogShare: 0.5 },
+    teamGoals: { weight: 0.5, sogShare: 0.5 },
     saves: { kShots: 1500, kGames: 10, r: 60 },
     game: {
-      ridge: 6, priorWeight: 0.25, shotWeight: 0.5, homeIce: true, goalieWeight: 0.5, otHomeEdge: 0.02, calib: 0.7,
+      ridge: 6, priorWeight: 0.25, shotWeight: 0.2, xgWeight: 0.5, homeIce: true, goalieWeight: 0.5, otHomeEdge: 0.02, calib: 0.75,
       // Second night of a back-to-back: goals for / against shift (backtest:
       // win log loss 0.6848 → 0.6833, favorites' miss rate 45.7% → 44.9%).
       b2bFor: 0.2, b2bAgainst: 0.2,

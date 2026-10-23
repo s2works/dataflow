@@ -20,11 +20,29 @@ const SIDE = {
 };
 
 export const RANK_LABELS = { edge: 'Edge', model: 'Model chance', proj: 'Projection vs line' };
+export const MIN_PROB = [['0', 'Any'], ['0.55', '55%+'], ['0.6', '60%+'], ['0.65', '65%+']];
 
-export function rankPicks(cands, { by = 'edge', top = 20, maxPerMarket = {}, noUnder = ['anytime_td'] } = {}) {
+// Backtest hit rate of every candidate by the model's chance for its side:
+// rows of { x (with side), res } → [{ lo, hi, n, pred, hit }].
+export const PROB_BUCKETS = [[0.5, 0.55], [0.55, 0.6], [0.6, 0.65], [0.65, 0.7], [0.7, 1.01]];
+export function probBuckets(rows) {
+  return PROB_BUCKETS.map(([lo, hi]) => {
+    let n = 0, hits = 0, pred = 0;
+    for (const { x, res } of rows) {
+      const q = x.side === 'under' ? 1 - x.p : x.p;
+      if (q < lo || q >= hi || !res || res.void || res.actual === x.line) continue;
+      n++; hits += res.hit ? 1 : 0; pred += q;
+    }
+    return { lo, hi, n, pred: n ? +(pred / n).toFixed(3) : null, hit: n ? +(hits / n).toFixed(3) : null };
+  });
+}
+// The model's side for a candidate: whichever it gives 50%+.
+export const modelSide = (x) => ({ ...x, side: x.p >= 0.5 ? 'over' : 'under' });
+
+export function rankPicks(cands, { by = 'edge', top = 20, maxPerMarket = {}, noUnder = ['anytime_td'], minProb = 0 } = {}) {
   const list = (over) => {
     const out = [], per = {};
-    const rows = cands.filter((x) => SIDE[by](x, over) && (over || !noUnder.includes(x.market)))
+    const rows = cands.filter((x) => SIDE[by](x, over) && (over || !noUnder.includes(x.market)) && (over ? x.p : 1 - x.p) >= minProb)
       .sort((a, b) => SCORE[by](b, over) - SCORE[by](a, over));
     for (const x of rows) {
       if (out.length >= top) break;

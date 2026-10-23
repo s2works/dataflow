@@ -10,7 +10,7 @@ import { buildNhlProjector, buildNhlGameModel, goalieSaves } from './nhl/model.j
 import { gameFilter } from './gamefilter.js';
 import { fairOdds, mountOddsSwitch } from './odds.js';
 import { nhlDayPicks, gradeProp, gradeGame, indexResults, tally, MARKET_LABEL, lineupCore } from './nhl/picks.js';
-import { rankPicks, RANK_LABELS } from './rankpicks.js';
+import { rankPicks, RANK_LABELS, MIN_PROB } from './rankpicks.js';
 
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
@@ -20,7 +20,7 @@ const signed = (v) => (v == null ? '–' : v > 0 ? `+${v}` : `${v}`);
 const POS_NAME = { C: 'centers', W: 'wingers', D: 'defensemen' };
 const REFRESH_MS = 5 * 60e3;
 
-const state = { season: null, week: null, lastN: 0, tab: 'matchups', game: null, pos: 'ALL', search: '', propView: 'skaters', edgeMetric: 'pts', core: 'core', pickRank: 'edge', pickMarket: 'all', dvpMetric: 'pts', rankSide: 'off', weekSort: 'time', sort: {} };
+const state = { season: null, week: null, lastN: 0, tab: 'matchups', game: null, pos: 'ALL', search: '', propView: 'skaters', edgeMetric: 'pts', core: 'core', pickRank: 'edge', pickMarket: 'all', pickMin: '0', dvpMetric: 'pts', rankSide: 'off', weekSort: 'time', sort: {} };
 let data = null, model = null, projector = null, gameModel = null, history = [], record = null, locked = null, dayPicks = null;
 let indexUpdated = {}, lastCheck = null;
 const cache = new Map();
@@ -416,10 +416,10 @@ const tallyText = (t) => (t.n ? `<strong>${t.hits}-${t.n - t.hits}</strong> (${p
 
 function currentPicks() {
   // Ranked by something other than edge, or one market: re-rank live.
-  if (state.pickRank !== 'edge' || state.pickMarket !== 'all') {
+  if (state.pickRank !== 'edge' || state.pickMarket !== 'all' || +state.pickMin > 0) {
     const pk = nhlDayPicks(sport, data, history, state.week, { games: shownGames(), ...(state.lastN ? {} : { model }) });
     const cands = state.pickMarket === 'all' ? pk.props : pk.props.filter((x) => x.market === state.pickMarket);
-    return { ...pk, ...rankPicks(cands, { by: state.pickRank, maxPerMarket: state.pickMarket === 'all' ? { saves: 4 } : {} }), source: 'ranked' };
+    return { ...pk, ...rankPicks(cands, { by: state.pickRank, minProb: +state.pickMin, maxPerMarket: state.pickMarket === 'all' ? { saves: 4 } : {} }), source: 'ranked' };
   }
   // Some games filtered out: re-rank within the games shown.
   if (games_.active()) {
@@ -464,7 +464,7 @@ function viewPicks() {
   const tUnder = tally(pk.under.map((x) => ({ x, res: gradeProp(x, data, idx) })));
   const games = pk.games.map((x) => ({ x, r: gradeGame(x, data, idx) }));
   const status = pk.source === 'ranked'
-    ? `<span class="badge alert">Re-ranked</span> By ${RANK_LABELS[state.pickRank].toLowerCase()}${state.pickMarket !== 'all' ? `, ${MARKET_LABEL[state.pickMarket].toLowerCase()} only` : ''}, computed live. The Scorecard grades the default list (all markets, ranked by edge).`
+    ? `<span class="badge alert">Re-ranked</span> By ${RANK_LABELS[state.pickRank].toLowerCase()}${state.pickMarket !== 'all' ? `, ${MARKET_LABEL[state.pickMarket].toLowerCase()} only` : ''}${+state.pickMin > 0 ? `, model ${Math.round(state.pickMin * 100)}%+ only` : ''}, computed live. The Scorecard grades the default list (all markets, ranked by edge).`
     : pk.source === 'filtered'
     ? `<span class="badge alert">Filtered</span> Top picks re-ranked within the ${pk.games.length} game${pk.games.length === 1 ? '' : 's'} selected. The Scorecard grades the full-day list.`
     : pk.source === 'locked' && Date.now() < new Date(pk.locks_at).getTime()
@@ -479,11 +479,13 @@ function viewPicks() {
       <td class="l"><strong>${x.pOver55 >= 0.5 ? 'Over' : 'Under'} 5.5</strong> ${pct(x.pOver55 >= 0.5 ? x.pOver55 : 1 - x.pOver55)} <span class="rk">proj ${fmt(x.total, 1)}</span></td><td>${r ? resCell({ hit: r.hitTotal, actual: r.total }) : resCell(null)}</td></tr>`).join('');
   return `<div class="toolbar"><strong>${esc(dayLabel(state.week))}</strong>
       <span class="muted small">Rank by</span>${seg('pickRank', Object.entries(RANK_LABELS))}
-      ${seg('pickMarket', [['all', 'All'], ...Object.entries(MARKET_LABEL)])}</div>
+      ${seg('pickMarket', [['all', 'All'], ...Object.entries(MARKET_LABEL)])}
+      <span class="muted small">Model chance</span>${seg('pickMin', MIN_PROB)}</div>
     <div class="toolbar"><span class="muted">${status}</span></div>
     <div class="card upset-summary">Top 20 overs: ${tallyText(tOver)} · Top 20 unders: ${tallyText(tUnder)}
       · Winners: ${tallyText({ n: games.filter((g) => g.r).length, hits: games.filter((g) => g.r?.hitWin).length })}
       · Totals: ${tallyText({ n: games.filter((g) => g.r).length, hits: games.filter((g) => g.r?.hitTotal).length })}
+      ${confidenceLine(record?.picks, state.pickMarket, MARKET_LABEL[state.pickMarket])}
       <div class="small muted">Only each team's top 9 forwards and top 4 defensemen by recent ice time (the players books post props for). No free NHL prop lines, so each line is the one a book would most likely post: the half-goal nearest his own average (shots, blocks, saves) or 0.5 (points, goals, assists). Edge = how far tonight's matchup moves the model's chance off what his average alone implies. Real books shade lines too, so compare with the actual line before betting. Goalies are probable, not confirmed (a different starter = void).</div></div>
     <div class="stack">
       <div class="card"><h3>Top 20 overs</h3>${picksTable('pick-over', pk.over, idx)}</div>
@@ -491,6 +493,15 @@ function viewPicks() {
     </div>
     <div class="card" style="margin-top:12px"><h3>Game picks</h3><div class="tbl-wrap"><table>
       <tr><th class="l">Game</th><th class="l">Winner</th><th>Result</th><th class="l">Total</th><th>Result</th></tr>${gRows}</table></div></div>`;
+}
+
+
+// Backtest: hit rate of every prop by the model's chance for its side.
+function confidenceLine(rec, market, label) {
+  const bs = (market !== 'all' && rec?.byProbMarket?.[market]) || rec?.byProb;
+  if (!bs) return '';
+  const cells = bs.filter((b) => b.n >= 20).map((b) => `<span class="chip" title="${b.n} props">model ${Math.round(b.lo * 100)}${b.hi > 1 ? '+' : `–${Math.round(b.hi * 100)}`}% → <strong>hit ${Math.round(b.hit * 100)}%</strong></span>`).join('');
+  return cells ? `<div class="chips" style="margin-top:6px"><span class="small muted">Backtest${market !== 'all' ? ` (${label})` : ''}, every prop on the model's side:</span>${cells}</div>` : '';
 }
 
 // --------------------------------------------------------- scorecard ----

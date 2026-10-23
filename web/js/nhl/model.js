@@ -19,6 +19,11 @@ import { nbAtLeast } from '../props.js';
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 const regress = (m, n, k) => 1 + (m - 1) * (n / (n + k));
 const avgOf = (rows, k) => rows.reduce((s, r) => s + (r[k] || 0), 0) / (rows.length || 1);
+// Player-game rows with play-by-play extras (att is >= sog, so att present
+// whenever he shot; pptoi/ixg rows without a shot still carry pptoi or are
+// flagged by the team game having play-by-play).
+let pbpGames = new Set();
+const hasPbp = (r) => pbpGames.has(r.game_id);
 
 // ---- shared context: logs, goalies, league rates -----------------------------
 function context(sport, model, history) {
@@ -129,6 +134,16 @@ function context(sport, model, history) {
   // Who was home in every loaded game (for players' home/away splits).
   const homeOf = new Map([...history, data].flatMap((d) => d.schedule.map((x) => [x.game_id, x.home])));
 
+  // Games with play-by-play (team shot attempts present), and the league's
+  // shots-on-goal per attempt.
+  pbpGames = new Set([...history.flatMap((d) => d.team_games), ...data.team_games].filter((r) => r.cf != null).map((r) => r.game_id));
+  let lgAtt = 0, lgSogP = 0;
+  for (const r of [...history.flatMap((d) => d.player_games), ...data.player_games.filter((x) => x.week < beforeWeek)]) {
+    if (!pbpGames.has(r.game_id)) continue;
+    lgAtt += r.att || 0; lgSogP += r.sog || 0;
+  }
+  const lgSogPerAtt = lgAtt ? lgSogP / lgAtt : 0.5;
+
   // Team shots for / against per game (for goalie saves and the game model).
   const teamShots = new Map();
   for (const r of tg) {
@@ -137,7 +152,7 @@ function context(sport, model, history) {
     teamShots.set(r.team, s);
   }
 
-  return { data, beforeWeek, logs, prev, league, lgSvPct, svPct, probable, b2b, restDays, homeOf, teamShots, names, dayOf };
+  return { data, beforeWeek, logs, prev, league, lgSvPct, svPct, probable, b2b, restDays, homeOf, teamShots, names, dayOf, lgSogPerAtt };
 }
 
 // ---- skaters -------------------------------------------------------------------
@@ -157,8 +172,44 @@ export function buildNhlProjector(sport, model, { history = [], disabled = new S
       w += P.baseline.priorGames;
     }
     for (const k of sport.rawColumns) out[k] = w ? out[k] / w : 0;
+
+    // Play-by-play extras (games that have them, this + last season).
+    const pbpRows = [...rows, ...(P.baseline.priorGames && prev.length >= P.baseline.minPriorGames ? prev : [])].filter(hasPbp);
+    const sum = (k) => pbpRows.reduce((s, r) => s + (r[k] || 0), 0);
+    const n = pbpRows.length;
+    out.pbpGames = n;
+    if (n) {
+      const att = sum('att'), sog = sum('sog'), ixg = sum('ixg'), g = sum('g');
+      out.att = att / n; out.ixg = ixg / n; out.pptoi = sum('pptoi') / n;
+      // Shots from attempts: his shots-per-attempt, regressed to league.
+      const A = P.attempts;
+      if (A.weight && att > 0) {
+        const ratio = (sog + A.k * ctx.lgSogPerAtt) / (att + A.k);
+        out.sog = (1 - A.weight) * out.sog + A.weight * out.att * ratio;
+      }
+      // Goals from expected goals: his finishing (goals / xG), regressed to 1.
+      const X = P.xg;
+      if (X.weight && ixg > 0) {
+        const finish = (g + X.k) / (ixg + X.k);
+        const fromXg = out.ixg * finish;
+        const dg = (1 - X.weight) * out.g + X.weight * fromXg - out.g;
+        out.g += dg;
+        out.pts += dg; // points move with goals
+      }
+    }
     return out;
   }
+
+  let gmCache = null;
+  const gameModel = () => (gmCache ??= buildNhlGameModel(sport, model.data, { beforeWeek: model.beforeWeek, history, model }));
+  const gfAvg = new Map();
+  for (const r of model.data.team_games.filter((x) => x.week < model.beforeWeek)) {
+    const t = gfAvg.get(r.team) ?? { gf: 0, n: 0 };
+    t.gf += r.gf; t.n++;
+    gfAvg.set(r.team, t);
+  }
+  // Regressed toward the league average (10 games).
+  const teamAvgGf = (team) => { const t = gfAvg.get(team) ?? { gf: 0, n: 0 }; return (t.gf + 10 * ctx.league.gf) / (t.n + 10); };
 
   function project(pl, g) {
     const isHome = g.home === pl.team;
@@ -259,6 +310,41 @@ export function buildNhlProjector(sport, model, { history = [], disabled = new S
       }
     }
 
+    // Team scoring tonight: the game model's expected goals for his team vs
+    // the team's average (opponent defense, goalie, home ice in one number).
+    if (!disabled.has('team') && P.teamGoals.weight) {
+      const gm = gameModel();
+      const x = gm.predict(g);
+      const exp = isHome ? x.ptsHome : x.ptsAway;
+      const avg = teamAvgGf(pl.team);
+      if (avg > 0) {
+        const m = clamp((exp / avg) ** P.teamGoals.weight, 0.75, 1.35);
+        factors.push({
+          id: 'team', label: 'Team goals',
+          text: `${pl.team} expected ${exp.toFixed(2)} goals (avg ${avg.toFixed(2)})`,
+          m: (k) => (scoring(k) ? m : k === 'sog' ? 1 + (m - 1) * P.teamGoals.sogShare : 1),
+        });
+      }
+    }
+
+    // Power-play role: recent PP ice time vs his usual (PP1 promotions /
+    // demotions move points more than even-strength ice time does).
+    if (!disabled.has('pp') && P.pp.weight && base.pbpGames >= P.pp.games + 3) {
+      const rows = (ctx.logs.get(pl.id) || []).filter(hasPbp).slice(0, P.pp.games);
+      if (rows.length === P.pp.games) {
+        const recent = avgOf(rows, 'pptoi');
+        const rel = (recent - base.pptoi) / (base.pptoi + P.pp.c);
+        const m = clamp(1 + P.pp.weight * rel, 0.75, 1.3);
+        if (Math.abs(rel) > 0.05) {
+          factors.push({
+            id: 'pp', label: 'Power play',
+            text: `PP ${recent.toFixed(1)} min last ${P.pp.games} (avg ${base.pptoi.toFixed(1)})`,
+            m: (k) => (k === 'blk' ? 1 : k === 'sog' ? 1 + (m - 1) * P.pp.sogShare : m),
+          });
+        }
+      }
+    }
+
     // Ice-time trend (line / power-play promotions show up in TOI first).
     if (!disabled.has('toi') && P.toiTrend.weight) {
       const rows = ctx.logs.get(pl.id) || [];
@@ -344,7 +430,7 @@ export function buildNhlGameModel(sport, data, { beforeWeek = Infinity, history 
   const teams = data.teams.map((t) => t.abbr);
   const rows = [];
   const add = (tgs, w) => {
-    for (const r of tgs) rows.push({ off: r.team, def: r.opp, gf: r.gf, sog: r.sog, home: r.home, w });
+    for (const r of tgs) rows.push({ off: r.team, def: r.opp, gf: r.gf, sog: r.sog, xgf: r.xgf, home: r.home, w });
   };
   for (const d of history) add(d.team_games, C.priorWeight);
   add(data.team_games.filter((r) => r.week < beforeWeek), 1);
@@ -355,6 +441,9 @@ export function buildNhlGameModel(sport, data, { beforeWeek = Infinity, history 
   const homeRows = rows.filter((r) => r.home);
   const hfa = C.homeIce ? homeRows.reduce((s, r) => s + r.w * r.gf, 0) / homeRows.reduce((s, r) => s + r.w, 0) - mGf : 0;
 
+  // Expected goals: only games with play-by-play.
+  const xgRows = rows.filter((r) => r.xgf != null);
+  const mXg = xgRows.length ? xgRows.reduce((s, r) => s + r.w * r.xgf, 0) / xgRows.reduce((s, r) => s + r.w, 0) : mGf;
   function fit(key, mean) {
     const o = Object.fromEntries(teams.map((t) => [t, 0]));
     const d = Object.fromEntries(teams.map((t) => [t, 0]));
@@ -362,7 +451,7 @@ export function buildNhlGameModel(sport, data, { beforeWeek = Infinity, history 
       const on = {}, dn = {}, od = {}, dd = {};
       for (const t of teams) { on[t] = 0; dn[t] = 0; od[t] = C.ridge; dd[t] = C.ridge; }
       for (const r of rows) {
-        if (!(r.off in o) || !(r.def in d)) continue;
+        if (!(r.off in o) || !(r.def in d) || r[key] == null) continue;
         const s = key === 'gf' ? (r.home ? hfa / 2 : -hfa / 2) : 0;
         on[r.off] += r.w * (r[key] - mean - d[r.def] - s); od[r.off] += r.w;
         dn[r.def] += r.w * (r[key] - mean - o[r.off] - s); dd[r.def] += r.w;
@@ -373,10 +462,13 @@ export function buildNhlGameModel(sport, data, { beforeWeek = Infinity, history 
   }
   const goals = fit('gf', mGf);
   const shots = fit('sog', mSog);
+  const xg = C.xgWeight ? fit('xgf', mXg) : null;
+  const xs = mGf / mXg; // expected goals → goals scale
   const O = {}, D = {};
   for (const t of teams) {
-    O[t] = (1 - C.shotWeight) * goals.o[t] + C.shotWeight * shots.o[t] * shPct;
-    D[t] = (1 - C.shotWeight) * goals.d[t] + C.shotWeight * shots.d[t] * shPct;
+    const wx = xg ? C.xgWeight : 0;
+    O[t] = (1 - C.shotWeight - wx) * goals.o[t] + C.shotWeight * shots.o[t] * shPct + (xg ? wx * xg.o[t] * xs : 0);
+    D[t] = (1 - C.shotWeight - wx) * goals.d[t] + C.shotWeight * shots.d[t] * shPct + (xg ? wx * xg.d[t] * xs : 0);
   }
 
   // Goalie: probable starter's save % vs the team's average this season.

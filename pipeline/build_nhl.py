@@ -40,6 +40,8 @@ FILES = {
     "team": BASE + "/team_box/parquet/team_box_{end}.parquet",
     "skater": BASE + "/skater_box/parquet/skater_box_{end}.parquet",
     "goalie": BASE + "/goalie_box/parquet/goalie_box_{end}.parquet",
+    # Play-by-play with who's on the ice and expected goals (xg) per shot.
+    "pbp": BASE + "/pbp/parquet/play_by_play_{end}.parquet",
 }
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -92,6 +94,49 @@ def minutes(toi) -> float:
         return round(int(m) + int(s) / 60, 1)
     except ValueError:
         return 0.0
+
+
+def pbp_stats(pbp: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Per player-game: shot attempts (att), individual expected goals (ixg),
+    power-play ice time in minutes (pptoi). Per team-game: shot attempts and
+    expected goals for / against (cf, ca, xgf, xga).
+
+    On-ice time is approximated from consecutive events: the skaters listed at
+    an event are credited until the next one (line-change rows carry no game
+    id, so on-the-fly changes between events are missed). Power play = own
+    team has more skaters, both goalies in."""
+    ev = pbp[pbp["game_id"].notna()].copy()
+    ev["game_id"] = ev["game_id"].astype("int64")
+    ev = ev.sort_values(["game_id", "event_idx"])
+    shots = ev[ev["event_type"].isin(["SHOT", "MISSED_SHOT", "GOAL", "BLOCKED_SHOT"])]
+    shooter = shots[shots["event_player_1_id"].notna()]
+    att = shooter.groupby(["game_id", "event_player_1_id"]).size().rename("att")
+    unblocked = shooter[shooter["event_type"] != "BLOCKED_SHOT"]
+    ixg = unblocked.groupby(["game_id", "event_player_1_id"])["xg"].sum().rename("ixg")
+
+    # Shooting team: blocked shots are filed under the blocking team.
+    shot_team = shots["event_team_abbr"].where(shots["event_type"] != "BLOCKED_SHOT",
+                                               shots["home_abbr"].where(shots["event_team_abbr"] != shots["home_abbr"], shots["away_abbr"]))
+    t = pd.DataFrame({"game_id": shots["game_id"], "team": shot_team, "xg": shots["xg"].fillna(0)})
+    tf = t.groupby(["game_id", "team"]).agg(cf=("xg", "size"), xgf=("xg", "sum")).reset_index()
+
+    # Power-play time on ice.
+    ev["dt"] = (ev.groupby("game_id")["game_seconds"].shift(-1) - ev["game_seconds"]).clip(lower=0, upper=120).fillna(0)
+    goalies_in = ev["home_goalie_id"].notna() & ev["away_goalie_id"].notna()
+    rows = []
+    for side, more in (("home", ev["home_skaters"] > ev["away_skaters"]), ("away", ev["away_skaters"] > ev["home_skaters"])):
+        pp = ev[more & goalies_in & (ev["dt"] > 0)]
+        for k in range(1, 8):
+            col = f"{side}_on_{k}_id"
+            if col in pp.columns:
+                rows.append(pp[["game_id", col, "dt"]].rename(columns={col: "id"}).dropna())
+    ppt = (pd.concat(rows).groupby(["game_id", "id"])["dt"].sum() / 60).rename("pptoi") if rows else pd.Series(dtype=float, name="pptoi")
+
+    pl = pd.concat([att, ixg], axis=1).reset_index().rename(columns={"event_player_1_id": "id"})
+    pl = pl.merge(ppt.reset_index(), on=["game_id", "id"], how="outer")
+    pl["id"] = pl["id"].astype("int64")
+    pl[["att", "ixg", "pptoi"]] = pl[["att", "ixg", "pptoi"]].fillna(0)
+    return pl, tf
 
 
 def api_boxscores(sched: pd.DataFrame) -> tuple[list, list, list, dict]:
@@ -176,6 +221,9 @@ def build_season(season: int) -> dict | None:
     sched.loc[~played, ["home_score", "away_score"]] = None
 
     team_box = pd.read_parquet(io.BytesIO(raw["team"])) if raw["team"] else pd.DataFrame()
+    pbp_player = pbp_team = None
+    if raw["pbp"]:
+        pbp_player, pbp_team = pbp_stats(pd.read_parquet(io.BytesIO(raw["pbp"])))
     if api_team:
         team_box = pd.concat([team_box, pd.DataFrame(api_team)], ignore_index=True)
     nick = team_box.drop_duplicates("team_abbrev").set_index("team_abbrev")["team_name"].to_dict() if len(team_box) else {}
@@ -205,8 +253,14 @@ def build_season(season: int) -> dict | None:
             "blocked_shots": "blk", "power_play_goals": "ppg", "faceoff_win_pctg": "fo_pct",
         })
         tb["fo_pct"] = (tb["fo_pct"] * 100).round(1)
-        team_games = records(tb[["game_id", "week", "game_type", "team", "opp", "home", "gf", "ga", "sog", "sa",
-                                 "blk", "hits", "pim", "ppg", "giveaways", "takeaways", "fo_pct"]].sort_values(["week", "game_id", "team"]))
+        cols = ["game_id", "week", "game_type", "team", "opp", "home", "gf", "ga", "sog", "sa",
+                "blk", "hits", "pim", "ppg", "giveaways", "takeaways", "fo_pct"]
+        if pbp_team is not None:
+            tb = tb.merge(pbp_team, on=["game_id", "team"], how="left")
+            tb = tb.merge(pbp_team.rename(columns={"team": "opp", "cf": "ca", "xgf": "xga"}), on=["game_id", "opp"], how="left")
+            tb[["xgf", "xga"]] = tb[["xgf", "xga"]].round(2)
+            cols += ["cf", "ca", "xgf", "xga"]
+        team_games = records(tb[cols].sort_values(["week", "game_id", "team"]))
 
     # ---- skaters ----------------------------------------------------------------
     players, player_games, position_games = [], [], []
@@ -225,6 +279,13 @@ def build_season(season: int) -> dict | None:
                                 "shots_on_goal": "sog", "blocked_shots": "blk", "power_play_goals": "ppg"})
         cols = ["g", "a", "pts", "sog", "blk", "hits", "ppg", "pim", "toi"]
         sk[cols] = sk[cols].fillna(0)
+        if pbp_player is not None:
+            # Play-by-play extras; games without play-by-play yet (filled in from
+            # the NHL API) simply don't have them.
+            sk = sk.merge(pbp_player, on=["game_id", "id"], how="left")
+            sk["ixg"] = sk["ixg"].round(3)
+            sk["pptoi"] = sk["pptoi"].round(2)
+            cols += ["att", "ixg", "pptoi"]
         latest = sk.sort_values("week").groupby("id").tail(1)
         players = records(latest[["id", "player_name", "pos", "team"]].rename(columns={"player_name": "name"}).sort_values("name"))
         pg = sk[["id", "game_id", "week", "team", "opp", *cols]].sort_values(["week", "game_id", "team"])
