@@ -5,7 +5,9 @@
 // most likely post: the half-goal nearest the player's own average (shots,
 // blocks, goalie saves) or 0.5 (points, goals, assists). "Edge" = the model's
 // chance minus the chance implied by his average alone at that line, i.e. how
-// far tonight's matchup moves him off his usual number. Used by the Top Picks
+// far tonight's matchup moves him off his usual number. Only players books
+// commonly post props for are considered: each team's top 9 forwards and top
+// 4 defensemen by recent ice time. Used by the Top Picks
 // tab, the scorecard and tools/nhl_picks.mjs (which locks each day's picks
 // before puck drop).
 
@@ -16,9 +18,29 @@ import { nbAtLeast } from '../props.js';
 const halfLine = (avg) => Math.max(0.5, Math.round(avg - 0.5) + 0.5);
 const r3 = (x) => Math.round(x * 1000) / 1000;
 export const MARKET_LABEL = { sog: 'Shots', pts: 'Points', g: 'Goals', a: 'Assists', blk: 'Blocks', saves: 'Saves' };
+// What books usually offer (see the comment above).
+export const BOOK_COVERAGE = { forwards: 9, defense: 4, recentGames: 5 };
+
+// Each team's top forwards / defensemen by average ice time over their last
+// few games (ice time tracks line and pair promotions quickly).
+function lineupCore(players, ctx, cov) {
+  const byTeam = new Map();
+  for (const p of players) {
+    const rows = (ctx.logs.get(p.id) || []).slice(0, cov.recentGames);
+    const toi = rows.length ? rows.reduce((s, r) => s + (r.toi || 0), 0) / rows.length : 0;
+    const key = `${p.team}:${p.pos === 'D' ? 'D' : 'F'}`;
+    if (!byTeam.has(key)) byTeam.set(key, []);
+    byTeam.get(key).push({ id: p.id, toi });
+  }
+  const keep = new Set();
+  for (const [key, list] of byTeam) {
+    list.sort((a, b) => b.toi - a.toi).slice(0, key.endsWith(':D') ? cov.defense : cov.forwards).forEach((x) => keep.add(x.id));
+  }
+  return keep;
+}
 
 // Picks for one game day. `games` limits which games count (default: all).
-export function nhlDayPicks(sport, data, history, day, { games = null, top = 20, model = null, maxPerMarket = { saves: 4 } } = {}) {
+export function nhlDayPicks(sport, data, history, day, { games = null, top = 20, model = null, maxPerMarket = { saves: 4 }, coverage = BOOK_COVERAGE } = {}) {
   const P = sport.projection;
   games = games ?? data.schedule.filter((g) => g.week === day);
   model = model ?? buildModel(sport, data, { beforeWeek: day });
@@ -26,10 +48,12 @@ export function nhlDayPicks(sport, data, history, day, { games = null, top = 20,
   const gm = buildNhlGameModel(sport, data, { beforeWeek: day, history, model });
   const byTeam = new Map(games.flatMap((g) => [[g.home, g], [g.away, g]]));
   const props = [];
+  const playing = model.players.filter((p) => p.relevant && byTeam.has(p.team));
+  const core = coverage ? lineupCore(playing, projector.ctx, coverage) : null;
 
-  for (const p of model.players) {
+  for (const p of playing) {
+    if (core && !core.has(p.id)) continue;
     const g = byTeam.get(p.team);
-    if (!p.relevant || !g) continue;
     const r = projector.project(p, g);
     for (const [k, mk] of Object.entries(P.markets)) {
       const line = k === 'sog' || k === 'blk' ? halfLine(r.base[k]) : 0.5;

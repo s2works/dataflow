@@ -458,7 +458,7 @@ function viewPicks() {
     <div class="card upset-summary">Top 20 overs: ${tallyText(tOver)} · Top 20 unders: ${tallyText(tUnder)}
       · Winners: ${tallyText({ n: games.filter((g) => g.r).length, hits: games.filter((g) => g.r?.hitWin).length })}
       · Totals: ${tallyText({ n: games.filter((g) => g.r).length, hits: games.filter((g) => g.r?.hitTotal).length })}
-      <div class="small muted">No free NHL prop lines, so each line is the one a book would most likely post: the half-goal nearest his own average (shots, blocks, saves) or 0.5 (points, goals, assists). Edge = how far tonight's matchup moves the model's chance off what his average alone implies. Real books shade lines too, so compare with the actual line before betting. Goalies are probable, not confirmed (a different starter = void).</div></div>
+      <div class="small muted">Only each team's top 9 forwards and top 4 defensemen by recent ice time (the players books post props for). No free NHL prop lines, so each line is the one a book would most likely post: the half-goal nearest his own average (shots, blocks, saves) or 0.5 (points, goals, assists). Edge = how far tonight's matchup moves the model's chance off what his average alone implies. Real books shade lines too, so compare with the actual line before betting. Goalies are probable, not confirmed (a different starter = void).</div></div>
     <div class="stack">
       <div class="card"><h3>Top 20 overs</h3>${picksTable('pick-over', pk.over, idx)}</div>
       <div class="card"><h3>Top 20 unders</h3>${picksTable('pick-under', pk.under, idx)}</div>
