@@ -8,6 +8,7 @@ import { ANGLES, anglesFor, boomBust, angleEffect } from './boombust.js';
 import { buildFirstTd } from './firsttd.js';
 import { gameFilter } from './gamefilter.js';
 import { fmtOdds, fairOdds, juiceLabel, mountOddsSwitch } from './odds.js';
+import { rankPicks, RANK_LABELS } from './rankpicks.js';
 import { NFL_MARKETS, projectableRows, nflCandidates, topPicks, nflResults, gradeNflPick, tallyPicks } from './nflpicks.js';
 
 const ANGLE_LABELS = Object.fromEntries(ANGLES.map((a) => [a.id, a.label]));
@@ -36,6 +37,8 @@ const state = {
   expanded: null,
   tdView: 'any',
   pickLines: 'all', // Top Picks: 'all' lines or 'vegas' only
+  pickRank: 'edge', // Top Picks ranking (rankpicks.js)
+  pickMarket: 'all',
   weekSort: 'time',
   projView: 'proj',
 };
@@ -961,8 +964,12 @@ const fmtMl = fmtOdds;
 // -------------------------------------------------------- top picks ----
 // The week's picks: games saved before kickoff come from picks_<season>.json
 // (what the Scorecard grades); any other game is computed live here.
+const rankedView = () => state.pickRank !== 'edge' || state.pickMarket !== 'all';
+
 function weekPicks() {
-  const saved = savedPicks?.weeks?.[state.week]?.games ?? {};
+  // Re-ranked views use every candidate, computed live (saved games only keep
+  // their top edges).
+  const saved = rankedView() ? {} : savedPicks?.weeks?.[state.week]?.games ?? {};
   const liveGames = weekGames().filter((g) => !saved[g.game_id] && gameOn(g.game_id));
   const live = liveGames.length ? nflCandidates(sport, projectableRows(sport, model, projector, liveGames), propDist, data.props ?? {}) : [];
   const now = Date.now();
@@ -971,14 +978,22 @@ function weekPicks() {
     ...live.map((x) => ({ ...x, status: 'live' })),
   ];
   const nVegas = cands.filter((x) => x.src === 'vegas').length;
-  const pool = state.pickLines === 'vegas' ? cands.filter((x) => x.src === 'vegas') : cands;
-  return { ...topPicks(pool), nSaved: Object.keys(saved).length, nLive: liveGames.length, nVegas };
+  let pool = state.pickLines === 'vegas' ? cands.filter((x) => x.src === 'vegas') : cands;
+  if (state.pickMarket !== 'all') pool = pool.filter((x) => x.market === state.pickMarket);
+  return { ...(rankedView() ? rankPicks(pool, { by: state.pickRank }) : topPicks(pool)), nSaved: Object.keys(saved).length, nLive: liveGames.length, nVegas };
 }
 
 const resBadge = (res) => (!res ? '<span class="muted">pending</span>'
   : res.void ? '<span class="muted" title="Did not play">void</span>'
   : `<span class="res ${res.hit ? 'res-hit' : 'res-miss'}">${res.hit ? '✓' : '✗'} ${res.actual}</span>`);
 const wl = (t) => (t.n ? `<strong>${t.hits}-${t.n - t.hits}</strong> (${pctFmt(t.hits / t.n)})` : '<span class="muted">–</span>');
+
+// Vegas line 35%+ (and 8+ yards / 1+ catch) away from our projection.
+const lineFarOff = (x) => {
+  if (x.src !== 'vegas' || ['anytime_td', 'pass_td'].includes(x.market) || !(x.line > 0)) return false;
+  const gap = Math.abs(x.proj - x.line);
+  return gap / x.line > 0.35 && gap >= (x.market === 'rec' ? 1 : 8);
+};
 
 function nflPicksTable(id, rows, idx) {
   const d = (x) => (['rec', 'pass_td', 'anytime_td'].includes(x.market) ? 2 : 1);
@@ -993,13 +1008,17 @@ function nflPicksTable(id, rows, idx) {
     {
       id: 'line', label: 'Line', title: 'Vegas = consensus of US books (price for this side; opening line if it moved). est. = estimated from his own average (no Vegas line pulled)',
       cell: (x) => (x.src === 'vegas'
-        ? `<span class="badge pick">Vegas</span> <span class="small">${fmtMl(x.side === 'under' ? x.price?.under : x.price?.over)}</span>${x.price?.open != null && x.price.open !== x.line ? ` <span class="rk">from ${x.price.open}</span>` : ''}`
+        ? `${lineFarOff(x) ? '<span class="badge alert" title="Our projection is 35%+ (and 8+ yards / 1+ catch) away from the Vegas line. Books usually know something the model doesn’t (role change, injury news): check before trusting this edge.">⚠</span> ' : ''}<span class="badge pick">Vegas</span> <span class="small">${fmtMl(x.side === 'under' ? x.price?.under : x.price?.over)}</span>${x.price?.open != null && x.price.open !== x.line ? ` <span class="rk">from ${x.price.open}</span>` : ''}`
         : '<span class="badge alert" title="No Vegas line: estimated from his own average">est.</span>'),
     },
     { id: 'proj', label: 'Proj', title: 'Model projection (his average in small print)', cell: (x) => `<strong>${fmt(x.proj, d(x))}</strong> <span class="rk">avg ${fmt(x.base, d(x))}</span>` },
     { id: 'p', label: 'Model', title: 'Model chance this side hits (fair odds)', cell: (x) => { const q = x.side === 'under' ? 1 - x.p : x.p; return `<strong>${pctFmt(q)}</strong> <span class="rk">${fairOdds(q)}</span>`; } },
     { id: 'pb', label: 'Book', title: 'Vegas: the book’s chance with the vig removed. est.: what his average alone implies at this line', cell: (x) => pctFmt(x.side === 'under' ? 1 - x.pBook : x.pBook) },
-    { id: 'edge', label: 'Edge', title: 'Model chance minus the book’s (or average-only) chance', bg: (x) => edgeColor(Math.abs(x.edge) * 100, 15), cell: (x) => `+${(Math.abs(x.edge) * 100).toFixed(0)}` },
+    {
+      id: 'edge', label: 'Edge', title: 'Model chance minus the book’s (or average-only) chance, for this side',
+      bg: (x) => edgeColor((x.side === 'under' ? -x.edge : x.edge) * 100, 15),
+      cell: (x) => { const e = Math.round((x.side === 'under' ? -x.edge : x.edge) * 100); return e >= 0 ? `+${e}` : `−${-e}`; },
+    },
     { id: 'why', label: 'Why', cls: 'l wrap', cell: (x) => `<span class="small muted">${esc((x.why || []).join(' · '))}</span>` },
     { id: 'res', label: 'Result', cls: 'c', cell: (x) => (x.status === 'live' && !idx.final.has(x.game_id) ? '<span class="muted" title="Not saved yet: refreshes until kickoff">live</span>' : resBadge(gradeNflPick(x, idx))) },
   ];
@@ -1017,7 +1036,9 @@ function viewPicks() {
     : '<strong>No Vegas prop lines yet</strong>, so every line is estimated from the player\'s own average. Add the free Odds API key to the refresh job (README: “Player props vs projection → Setup”) and these switch to real Vegas lines automatically.';
   return `<div class="toolbar"><strong>Week ${state.week} top picks</strong>
       ${seg('pickLines', [['all', 'All lines'], ['vegas', `Vegas lines only (${pk.nVegas})`]])}
-      <span class="muted">${games_.active() ? '<span class="badge alert">Filtered</span> Ranked within the selected games only (the Scorecard grades the full-week list). ' : ''}${pk.nSaved ? `${pk.nSaved} games saved before kickoff (these count on the Scorecard)${pk.nLive ? `, ${pk.nLive} computed live` : ''}.` : 'Computed live (this week was before the scorecard started).'} ${sampleNote()}</span></div>
+      <span class="muted small">Rank by</span>${seg('pickRank', Object.entries(RANK_LABELS))}
+      ${seg('pickMarket', [['all', 'All'], ...Object.entries(NFL_MARKETS)])}</div>
+    <div class="toolbar"><span class="muted">${rankedView() ? `<span class="badge alert">Re-ranked</span> By ${RANK_LABELS[state.pickRank].toLowerCase()}${state.pickMarket !== 'all' ? `, ${NFL_MARKETS[state.pickMarket]} only` : ''}, computed live; the Scorecard grades the default list (all markets, by edge). ` : ''}${games_.active() ? '<span class="badge alert">Filtered</span> Ranked within the selected games only (the Scorecard grades the full-week list). ' : ''}${rankedView() ? '' : pk.nSaved ? `${pk.nSaved} games saved before kickoff (these count on the Scorecard)${pk.nLive ? `, ${pk.nLive} computed live` : ''}.` : 'Computed live (this week was before the scorecard started).'} ${sampleNote()}</span></div>
     <div class="card upset-summary">Top 20 overs: ${wl(tO)} · Top 20 unders: ${wl(tU)}
       <div class="small muted">${lineNote} Edge = the model's chance minus the book's. To beat ${juiceLabel()} juice a side needs 52.4%+. Ranked across all props: yards, receptions, pass TDs, and anytime TD when a book prices it.</div></div>
     <div class="stack">

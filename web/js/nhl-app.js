@@ -9,7 +9,8 @@ import { buildModel, edgeColor, rankColor, ordinal } from './engine.js';
 import { buildNhlProjector, buildNhlGameModel, goalieSaves } from './nhl/model.js';
 import { gameFilter } from './gamefilter.js';
 import { fairOdds, mountOddsSwitch } from './odds.js';
-import { nhlDayPicks, gradeProp, gradeGame, indexResults, tally, MARKET_LABEL } from './nhl/picks.js';
+import { nhlDayPicks, gradeProp, gradeGame, indexResults, tally, MARKET_LABEL, lineupCore } from './nhl/picks.js';
+import { rankPicks, RANK_LABELS } from './rankpicks.js';
 
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
@@ -19,7 +20,7 @@ const signed = (v) => (v == null ? '–' : v > 0 ? `+${v}` : `${v}`);
 const POS_NAME = { C: 'centers', W: 'wingers', D: 'defensemen' };
 const REFRESH_MS = 5 * 60e3;
 
-const state = { season: null, week: null, lastN: 0, tab: 'matchups', game: null, pos: 'ALL', search: '', propView: 'skaters', edgeMetric: 'pts', dvpMetric: 'pts', rankSide: 'off', weekSort: 'time', sort: {} };
+const state = { season: null, week: null, lastN: 0, tab: 'matchups', game: null, pos: 'ALL', search: '', propView: 'skaters', edgeMetric: 'pts', core: 'core', pickRank: 'edge', pickMarket: 'all', dvpMetric: 'pts', rankSide: 'off', weekSort: 'time', sort: {} };
 let data = null, model = null, projector = null, gameModel = null, history = [], record = null, locked = null, dayPicks = null;
 let indexUpdated = {}, lastCheck = null;
 const cache = new Map();
@@ -197,6 +198,15 @@ function skaterRows(games = dayGames()) {
   return model.players.filter((p) => p.relevant && byTeam.has(p.team)).map((p) => ({ p, r: projector.project(p, byTeam.get(p.team)) }));
 }
 
+// Player Props / Edges: optionally only each team's top 9 forwards and top 4
+// defensemen by recent ice time (the players books post props for).
+function coreOnly(rows) {
+  if (state.core === 'all') return rows;
+  const core = lineupCore(rows.map((x) => x.p), projector.ctx);
+  return rows.filter((x) => core.has(x.p.id));
+}
+const coreSeg = () => seg('core', [['core', 'Top 9 F / 4 D'], ['all', 'All skaters']]);
+
 function upsetInfo(g) {
   const p = gameModel.predict(g);
   const dogHome = p.pHome < 0.5;
@@ -322,7 +332,7 @@ function viewEdges() {
   const k = state.edgeMetric;
   const [, mLabel, d] = EDGE_METRICS.find((m) => m[0] === k);
   const scoring = k === 'pts' || k === 'g' || k === 'a';
-  let rows = skaterRows(shownGames()).map((x) => {
+  let rows = coreOnly(skaterRows(shownGames())).map((x) => {
     const s = model.posStat(x.r.opp, x.p.pos, k, 'def');
     // Regressed toward 1 by the opponent's games played (raw early-season
     // numbers swing wildly), same as the projection model.
@@ -389,6 +399,7 @@ function viewEdges() {
   return `<div class="toolbar">
       ${seg('edgeMetric', EDGE_METRICS.map(([v, l]) => [v, l]))}
       ${seg('pos', [['ALL', 'All'], ['C', 'C'], ['W', 'W'], ['D', 'D']])}
+      ${coreSeg()}
       <input id="search" type="search" placeholder="Player or team…" value="${esc(state.search)}">
       <span class="spacer"></span>
       <span class="muted">Every skater playing ${esc(dayLabel(state.week))} vs what tonight's opponent allows to his position. Green = soft matchup. ${sampleNote()}</span>
@@ -404,6 +415,12 @@ const resCell = (res) => (!res ? '<span class="muted">pending</span>'
 const tallyText = (t) => (t.n ? `<strong>${t.hits}-${t.n - t.hits}</strong> (${pct(t.hits / t.n)})` : '<span class="muted">–</span>');
 
 function currentPicks() {
+  // Ranked by something other than edge, or one market: re-rank live.
+  if (state.pickRank !== 'edge' || state.pickMarket !== 'all') {
+    const pk = nhlDayPicks(sport, data, history, state.week, { games: shownGames(), ...(state.lastN ? {} : { model }) });
+    const cands = state.pickMarket === 'all' ? pk.props : pk.props.filter((x) => x.market === state.pickMarket);
+    return { ...pk, ...rankPicks(cands, { by: state.pickRank, maxPerMarket: state.pickMarket === 'all' ? { saves: 4 } : {} }), source: 'ranked' };
+  }
   // Some games filtered out: re-rank within the games shown.
   if (games_.active()) {
     const games = shownGames();
@@ -428,7 +445,11 @@ function picksTable(id, rows, idx) {
     { id: 'proj', label: 'Proj', title: 'Model projection (his average in small print)', cell: (x) => `<strong>${fmt(x.proj, x.market === 'saves' ? 1 : 2)}</strong> <span class="rk">avg ${fmt(x.base, x.market === 'saves' ? 1 : 2)}</span>` },
     { id: 'p', label: 'Model', title: 'Model chance this side hits (fair odds)', cell: (x) => { const q = x.side === 'over' ? x.p : 1 - x.p; return `<strong>${pp(q)}</strong> <span class="rk">${fairOdds(q)}</span>`; } },
     { id: 'pb', label: 'His avg', title: 'Chance implied by his average alone at this line', cell: (x) => pp(x.side === 'over' ? x.pBase : 1 - x.pBase) },
-    { id: 'edge', label: 'Edge', title: 'Model chance minus average-only chance', bg: (x) => edgeColor(Math.abs(x.edge) * 100, 15), cell: (x) => `+${(Math.abs(x.edge) * 100).toFixed(0)}` },
+    {
+      id: 'edge', label: 'Edge', title: 'Model chance minus average-only chance, for this side',
+      bg: (x) => edgeColor((x.side === 'over' ? x.edge : -x.edge) * 100, 15),
+      cell: (x) => { const e = Math.round((x.side === 'over' ? x.edge : -x.edge) * 100); return e >= 0 ? `+${e}` : `−${-e}`; },
+    },
     { id: 'why', label: 'Why', cls: 'l wrap', cell: (x) => `<span class="small muted">${esc((x.why || []).join(' · '))}</span>` },
     { id: 'res', label: 'Result', cls: 'c', cell: (x) => resCell(gradeProp(x, data, idx)) },
   ];
@@ -442,7 +463,9 @@ function viewPicks() {
   const tOver = tally(pk.over.map((x) => ({ x, res: gradeProp(x, data, idx) })));
   const tUnder = tally(pk.under.map((x) => ({ x, res: gradeProp(x, data, idx) })));
   const games = pk.games.map((x) => ({ x, r: gradeGame(x, data, idx) }));
-  const status = pk.source === 'filtered'
+  const status = pk.source === 'ranked'
+    ? `<span class="badge alert">Re-ranked</span> By ${RANK_LABELS[state.pickRank].toLowerCase()}${state.pickMarket !== 'all' ? `, ${MARKET_LABEL[state.pickMarket].toLowerCase()} only` : ''}, computed live. The Scorecard grades the default list (all markets, ranked by edge).`
+    : pk.source === 'filtered'
     ? `<span class="badge alert">Filtered</span> Top picks re-ranked within the ${pk.games.length} game${pk.games.length === 1 ? '' : 's'} selected. The Scorecard grades the full-day list.`
     : pk.source === 'locked' && Date.now() < new Date(pk.locks_at).getTime()
     ? `<span class="badge alert">Saved</span> Snapshot ${esc(new Date(pk.locked_at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}. Updates with new data until the first puck drop (${esc(new Date(pk.locks_at).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }))}), then locks for the Scorecard.`
@@ -454,7 +477,10 @@ function viewPicks() {
   const gRows = games.map(({ x, r }) => `<tr><td class="l">${x.away} @ ${x.home}</td>
       <td class="l"><strong>${x.winner}</strong> ${pct(x.pWin)}</td><td>${r ? resCell({ hit: r.hitWin, actual: r.winner }) : resCell(null)}</td>
       <td class="l"><strong>${x.pOver55 >= 0.5 ? 'Over' : 'Under'} 5.5</strong> ${pct(x.pOver55 >= 0.5 ? x.pOver55 : 1 - x.pOver55)} <span class="rk">proj ${fmt(x.total, 1)}</span></td><td>${r ? resCell({ hit: r.hitTotal, actual: r.total }) : resCell(null)}</td></tr>`).join('');
-  return `<div class="toolbar"><strong>${esc(dayLabel(state.week))}</strong><span class="muted">${status}</span></div>
+  return `<div class="toolbar"><strong>${esc(dayLabel(state.week))}</strong>
+      <span class="muted small">Rank by</span>${seg('pickRank', Object.entries(RANK_LABELS))}
+      ${seg('pickMarket', [['all', 'All'], ...Object.entries(MARKET_LABEL)])}</div>
+    <div class="toolbar"><span class="muted">${status}</span></div>
     <div class="card upset-summary">Top 20 overs: ${tallyText(tOver)} · Top 20 unders: ${tallyText(tUnder)}
       · Winners: ${tallyText({ n: games.filter((g) => g.r).length, hits: games.filter((g) => g.r?.hitWin).length })}
       · Totals: ${tallyText({ n: games.filter((g) => g.r).length, hits: games.filter((g) => g.r?.hitTotal).length })}
@@ -577,7 +603,7 @@ function goaliesTable(games) {
 function viewProps() {
   const games = shownGames();
   const skaters = state.propView === 'skaters';
-  let rows = skaters ? skaterRows(games) : [];
+  let rows = skaters ? coreOnly(skaterRows(games)) : [];
   if (state.pos !== 'ALL') rows = rows.filter((x) => x.p.pos === state.pos);
   const q = state.search.trim().toLowerCase();
   if (q) rows = rows.filter((x) => x.p.name.toLowerCase().includes(q) || x.p.team.toLowerCase() === q);
@@ -586,6 +612,7 @@ function viewProps() {
   return `<div class="toolbar">
       ${seg('propView', [['skaters', 'Skaters'], ['goalies', 'Goalie saves']])}
       ${skaters ? seg('pos', [['ALL', 'All'], ['C', 'C'], ['W', 'W'], ['D', 'D']]) : ''}
+      ${skaters ? coreSeg() : ''}
       ${skaters ? `<input id="search" type="search" placeholder="Player or team…" value="${esc(state.search)}">` : ''}
       <span class="spacer"></span>
       <span class="muted">${skaters ? `Average (last season as a 25-game prior) × opponent vs position (shots, blocks), home ice, opposing goalie, ice-time trend. Chances use each stat's backtested spread. ${calib}` : 'Probable goalies (not confirmed: right ~64% of the time in backtests). Saves = shots against × save %.'} ${sampleNote()}</span>

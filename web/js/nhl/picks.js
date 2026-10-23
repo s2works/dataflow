@@ -23,7 +23,7 @@ export const BOOK_COVERAGE = { forwards: 9, defense: 4, recentGames: 5 };
 
 // Each team's top forwards / defensemen by average ice time over their last
 // few games (ice time tracks line and pair promotions quickly).
-function lineupCore(players, ctx, cov) {
+export function lineupCore(players, ctx, cov = BOOK_COVERAGE) {
   const byTeam = new Map();
   for (const p of players) {
     const rows = (ctx.logs.get(p.id) || []).slice(0, cov.recentGames);
