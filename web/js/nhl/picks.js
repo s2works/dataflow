@@ -19,13 +19,14 @@ const halfLine = (avg) => Math.max(0.5, Math.round(avg - 0.5) + 0.5);
 const r3 = (x) => Math.round(x * 1000) / 1000;
 export const MARKET_LABEL = { sog: 'Shots', pts: 'Points', g: 'Goals', a: 'Assists', blk: 'Blocks', saves: 'Saves' };
 
-// "Smash" = beats the line by 50%+ and by at least this many; "dud" = falls a
-// third or more short by the same margin (saves: just the margin, either way).
-export const SMASH_MARGIN = { sog: 2, blk: 2, pts: 1, g: 1, a: 1, saves: 8 };
+// Boom on the line = clears it by 40%+ and by at least this many (4+ shots on
+// 2.5, 2+ points on 0.5); bust = 40%+ under by the same minimum (saves: just
+// the margin, either way). Stored as smash / dud.
+export const SMASH_MARGIN = { sog: 1, blk: 1, pts: 1, g: 1, a: 1, saves: 5 };
 function smashOf(market, line, proj, r) {
   const m = SMASH_MARGIN[market];
-  const smash = market === 'saves' ? line + m : Math.max(line * 1.5, line + m);
-  const dud = market === 'saves' ? line - m : Math.min(line / 1.5, line - m);
+  const smash = market === 'saves' ? line + m : Math.max(line * 1.4, line + m);
+  const dud = market === 'saves' ? line - m : Math.min(line * 0.6, line - m);
   // Counts: at least ceil(smash) (lines are x.5, so smash is usually x.5 too).
   const pSmash = nbAtLeast(proj, r, Math.ceil(smash - 1e-9));
   const pDud = dud >= 0 ? 1 - nbAtLeast(proj, r, Math.floor(dud) + 1) : 0;

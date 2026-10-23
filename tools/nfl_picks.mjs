@@ -136,7 +136,7 @@ if (process.argv.includes('--backtest')) {
   });
   const smashCal = cal(smashRows), dudCal = cal(dudRows);
   const fc = (bs) => bs.filter((b) => b.n).map((b) => `${Math.round(b.pred * 100)}→${Math.round(b.hit * 100)}% (${b.n})`).join(' | ');
-  console.log(`\nSmash (beat line by 50%+): ${fc(smashCal)}\nDud (miss by 33%+):        ${fc(dudCal)}`);
+  console.log(`\nBoom (40%+ over the line): ${fc(smashCal)}\nBust (40%+ under the line): ${fc(dudCal)}`);
   const body = { weeks, ...t, markets, byProb, byProbMarket, smash: smashCal, dud: dudCal };
   const old = read(recFile);
   if (old && JSON.stringify({ ...old, fitted_at: undefined }) === JSON.stringify({ ...body, fitted_at: undefined })) console.log('picks_record.json unchanged');

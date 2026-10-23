@@ -15,9 +15,11 @@ import { overProb, fairOver, impliedProb, poissonAtLeast, medianOutcome, implied
 
 export const NFL_MARKETS = { pass_yds: 'Pass Yds', pass_td: 'Pass TDs', rush_yds: 'Rush Yds', rec: 'Receptions', rec_yds: 'Rec Yds', scrim_yds: 'Rush + Rec Yds', anytime_td: 'Anytime TD' };
 const r3 = (x) => Math.round(x * 1000) / 1000;
-// "Smash" = beats the line by 50%+ and by at least this much; "dud" = the
-// same margin below it (Boom / Bust tab).
-export const SMASH_MARGIN = { pass_yds: 50, rush_yds: 15, rec_yds: 15, scrim_yds: 20, rec: 2, pass_td: 1 };
+// Boom on the line = clears it by 40%+ and by at least this much; bust on the
+// line = 40%+ under by the same minimum (Boom / Bust tab). Stored as
+// smash / dud.
+export const BOOM_PCT = 0.4;
+export const SMASH_MARGIN = { pass_yds: 25, rush_yds: 5, rec_yds: 5, scrim_yds: 7, rec: 1, pass_td: 1 };
 const halfLine = (x) => Math.max(0.5, Math.round(x - 0.5) + 0.5);
 
 // Same player filter as the Projections tab: active, not ruled out, and in a
@@ -80,8 +82,8 @@ export function nflCandidates(sport, rows, propDist, props = {}) {
         pModel = over(proj, line);
         // Smash / dud chances from the same outcome spread.
         const mg = SMASH_MARGIN[stat];
-        smash = Math.max(line * 1.5, line + mg);
-        dud = Math.max(0, Math.min(line / 1.5, line - mg));
+        smash = Math.max(line * (1 + BOOM_PCT), line + mg);
+        dud = Math.max(0, Math.min(line * (1 - BOOM_PCT), line - mg));
         pSmash = over(proj, smash);
         pDud = dud > 0 ? 1 - over(proj, dud) : 0;
       }

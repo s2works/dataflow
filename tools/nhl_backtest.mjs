@@ -191,7 +191,7 @@ const cal = (rows) => [[0, 0.1], [0.1, 0.2], [0.2, 0.3], [0.3, 0.45], [0.45, 1.0
 });
 const smashCal = cal(smashRows), dudCal = cal(dudRows);
 const fcal = (bs) => bs.filter((b) => b.n).map((b) => `${Math.round(b.pred * 100)}→${Math.round(b.hit * 100)}% (${b.n})`).join(' | ');
-console.log(`\nSmash: ${fcal(smashCal)}\nDud:   ${fcal(dudCal)}`);
+console.log(`\nBoom on the line: ${fcal(smashCal)}\nBust on the line: ${fcal(dudCal)}`);
 const byProbMarket = Object.fromEntries(Object.entries(allSidesMk).map(([k, v]) => [k, probBuckets(v)]));
 console.log('\nEvery prop on the model\'s side, by model chance: predicted → hit (n)');
 console.log('  all     ' + byProb.map((b) => `${Math.round(b.lo * 100)}%+: ${b.n ? `${(b.pred * 100).toFixed(0)}→${(b.hit * 100).toFixed(0)}% (${b.n})` : '–'}`).join(' | '));

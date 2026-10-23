@@ -297,12 +297,14 @@ live "against Vegas" record is the real test.
 
 ### Boom / Bust tab
 
-**Prop smash / dud spots** (on this tab): for every prop with a line (Vegas
-or estimated), the model's chance he beats it by 50%+ and by a real amount
-(15 rush or rec yds, 20 rush+rec, 50 passing, 2 catches), or falls a third
-or more short. Different from edge: a big edge can still be a narrow
-clear. Backtest (33 weeks, est. lines): predicted 25% → 25%, 34% → 35%,
-51% → 55% smash; dud 24% → 25%, 35% → 33%.
+**On the line** (default view): boom / bust on the betting line, not
+fantasy points. For every prop with a line (Vegas, or estimated where none
+was pulled): the model's chance he clears it by 40%+ (and at least +5 rush or
+rec yds, +7 rush+rec, +25 passing, +1 catch), or falls 40%+ short by the
+same margins, with projection vs line and over/under chances; sortable,
+filterable by position, market, Vegas-only and game. Backtest (est. lines):
+boom predicted 25% → 26%, 36% → 36%, 50% → 52%; bust 25% → 25%, 34% → 34%.
+The fantasy-point view below is one click away (*Fantasy points*).
 
 
 **Boom** = at least 1.5× the player's average (and at least QB 22 / RB 16 /
@@ -455,7 +457,7 @@ model stands on its own (judged against results) and goalies are *probable*.
 | **Player Props** | Skaters: shots on goal (chance of 2+ … 5+), points (1+ with fair odds, 2+), anytime goal, assist, blocked shots, with the top reasons. Player Props and Player Edges default to each team's top 9 forwards and top 4 defensemen (switch to *All skaters*). Goalie saves view: probable starter, why, shots against × save %, chances at three lines. |
 | **Top Picks** | The day's top 20 overs and top 20 unders across shots, points, goals, assists, blocks and goalie saves (saves capped at 4 per list), from each team's top 9 forwards and top 4 defensemen by ice time over their last 5 games (the players books post props for; backtest edge unchanged, fewer void picks), plus game picks (winner, total 5.5), each graded ✓/✗ once results are in. Lines are estimated (no free NHL prop lines): the half-goal nearest the player's own average for shots/blocks/saves, 0.5 for points/goals/assists. Edge = the model's chance minus what his average alone implies at that line. |
 | **Scorecard** | Live record of the locked picks (overall, by day, by market): hit rate vs what the model expected and what the players' averages implied (beating the latter is the real test), plus the same method backtested on past game days. |
-| **Player Props → Smash spots** | Props at the usual book line the model expects him to clear by a lot (50%+ over the line and at least 2 shots/blocks, 1 point/goal/assist, 8 saves, e.g. 2+ points on 0.5) and dud spots (a third or more short). Backtest: predicted 24% → 23%, 35% → 35%. |
+| **Player Props → Boom / bust on the line** | Props at the usual book line the model expects him to clear by 40%+ (and at least 1 shot/block/point/goal/assist or 5 saves: 4+ shots on 2.5, 2+ points on 0.5), or fall 40%+ short; sortable. Backtest: boom 24% → 23%, 34% → 33%; bust 36% → 35%. |
 | **Defense vs Position** | What each team allows per game to centers, wingers and defensemen (points, goals, assists, shots, blocks), plus shots and goals allowed. |
 | **Team Rankings** | Offense/defense ranks (goals, shots, shooting %, PP goals, hits, faceoffs) and a Power rating. |
 

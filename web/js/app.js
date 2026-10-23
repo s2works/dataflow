@@ -37,6 +37,9 @@ const state = {
   expanded: null,
   tdView: 'any',
   pickLines: 'all', // Top Picks: 'all' lines or 'vegas' only
+  boomView: 'lines', // Boom / Bust: on the betting line, or fantasy points
+  boomMarket: 'all',
+  boomLines: 'all',
   pickRank: 'edge', // Top Picks ranking (rankpicks.js)
   pickMarket: 'all',
   pickMin: '0', // Top Picks: minimum model chance for the side
@@ -1253,31 +1256,38 @@ function boomTable(id, rows, kind) {
   return table(id, cols, rows, { col: isBoom ? 'boom' : 'bust', asc: false });
 }
 
-// Prop smash / dud spots: the model's chance of beating the line by a wide
-// margin (or missing it by one). Vegas line where pulled, estimated otherwise.
-function smashRows() {
+// Boom / bust on the line: the model's chance a prop clears its line
+// comfortably (40%+ over, with a minimum margin) or falls well short. Vegas
+// line where pulled, estimated otherwise.
+function lineRows() {
   const games = weekGames().filter((g) => gameOn(g.game_id));
   let c = nflCandidates(sport, projectableRows(sport, model, projector, games), propDist, data.props ?? {}).filter((x) => x.pSmash != null);
   if (state.pos !== 'ALL') c = c.filter((x) => x.pos === state.pos);
+  if (state.boomMarket !== 'all') c = c.filter((x) => x.market === state.boomMarket);
+  if (state.boomLines === 'vegas') c = c.filter((x) => x.src === 'vegas');
   const q = state.search.trim().toLowerCase();
   if (q) c = c.filter((x) => x.name.toLowerCase().includes(q) || x.team.toLowerCase() === q);
   return c;
 }
 
-function smashTable(id, rows, kind) {
-  const smash = kind === 'smash';
+function lineTable(id, rows, kind) {
+  const boom = kind === 'boom';
   const idx = nflResults(data);
   const d = (x) => (x.market === 'rec' || x.market === 'pass_td' ? 1 : 0);
+  const vsLine = (x) => (x.line > 0 ? x.proj / x.line - 1 : 0);
   const cols = [
-    { id: 'name', label: 'Player', cls: 'l', cell: (x) => `${esc(x.name)}${injuryBadge(x.id)} <span class="pos">${x.pos}</span>` },
+    { id: 'name', label: 'Player', cls: 'l', sort: (x) => x.name, cell: (x) => `${esc(x.name)}${injuryBadge(x.id)} <span class="pos">${x.pos}</span>` },
     { id: 'game', label: 'Game', cls: 'l', cell: (x) => `${x.team} <span class="vs">${x.home ? 'vs' : '@'}</span> ${x.opp}` },
-    { id: 'prop', label: 'Line', cls: 'l', cell: (x) => `${x.line} ${NFL_MARKETS[x.market]} ${x.src === 'vegas' ? '<span class="badge pick">Vegas</span>' : '<span class="badge alert">est.</span>'}` },
-    { id: 'proj', label: 'Proj', cell: (x) => `<strong>${fmt(x.proj, 1)}</strong>` },
-    { id: 'p', label: smash ? 'Over' : 'Under', title: 'Model chance of clearing the line on this side', cell: (x) => pctFmt(smash ? x.p : 1 - x.p) },
+    { id: 'prop', label: 'Line', cls: 'l', sort: (x) => x.market, cell: (x) => `${x.line} ${NFL_MARKETS[x.market]} ${x.src === 'vegas' ? `${lineFarOff(x) ? '<span class="badge alert" title="Projection far from the Vegas line: books may know something (role change, injury news)">⚠</span> ' : ''}<span class="badge pick">Vegas</span>` : '<span class="badge alert">est.</span>'}` },
+    { id: 'proj', label: 'Proj', sort: (x) => x.proj, cell: (x) => `<strong>${fmt(x.proj, d(x))}</strong>` },
+    { id: 'vs', label: 'vs Line', title: 'Projection vs the line', sort: (x) => vsLine(x), bg: (x) => edgeColor(vsLine(x) * 100, 40), cell: (x) => { const v = Math.round(vsLine(x) * 100); return v >= 0 ? `+${v}%` : `−${-v}%`; } },
+    { id: 'p', label: boom ? 'Over' : 'Under', title: 'Model chance of clearing the line on this side', sort: (x) => (boom ? x.p : 1 - x.p), cell: (x) => pctFmt(boom ? x.p : 1 - x.p) },
     {
-      id: 'ps', label: smash ? 'Smash' : 'Dud', title: smash ? 'Chance he beats the line by 50%+ (and by a real amount: 15 yds, 20 rush+rec, 50 pass, 2 catches)' : 'Chance he falls a third or more below the line (same minimum margins)',
-      bg: (x) => (smash ? `rgba(var(--good-rgb), ${Math.min(0.6, x.pSmash)})` : `rgba(var(--bad-rgb), ${Math.min(0.6, x.pDud)})`),
-      cell: (x) => `<strong>${pctFmt(smash ? x.pSmash : x.pDud)}</strong> <span class="rk">${smash ? '≥' : '≤'} ${fmt(smash ? x.smash : x.dud, d(x))}</span>`,
+      id: 'ps', label: boom ? 'Boom' : 'Bust', sort: (x) => (boom ? x.pSmash : x.pDud),
+      title: boom ? 'Chance he clears the line by 40%+ (and by at least 5 rush/rec yds, 7 rush+rec, 25 pass, 1 catch)' : 'Chance he falls 40%+ short of the line (same minimum margins)',
+      bg: (x) => (boom ? `rgba(var(--good-rgb), ${Math.min(0.6, x.pSmash)})` : `rgba(var(--bad-rgb), ${Math.min(0.6, x.pDud)})`),
+      // Whole units: boom at ceil(threshold)+, bust at floor(threshold) or fewer.
+      cell: (x) => `<strong>${pctFmt(boom ? x.pSmash : x.pDud)}</strong> <span class="rk">${boom ? `${Math.ceil(x.smash - 1e-9)}+` : `≤ ${Math.floor(x.dud)}`}</span>`,
     },
     {
       id: 'res', label: 'Result', cls: 'c',
@@ -1286,29 +1296,43 @@ function smashTable(id, rows, kind) {
         const r = idx.rows.get(`${x.game_id}:${x.id}`);
         if (!r) return '<span class="muted">void</span>';
         const a = x.market === 'scrim_yds' ? (r.rush_yds || 0) + (r.rec_yds || 0) : r[x.market] || 0;
-        const hit = smash ? a >= x.smash : a <= x.dud;
-        return `<span class="res ${hit ? 'res-hit' : 'res-miss'}">${hit ? '✓' : '✗'} ${a}</span>`;
+        const hit = boom ? a >= x.smash : a <= x.dud;
+        const clear = boom ? a > x.line : a < x.line;
+        return `<span class="res ${hit ? 'res-hit' : clear ? '' : 'res-miss'}" title="${hit ? (boom ? 'Boomed' : 'Busted') : clear ? 'Cleared the line, not by the boom margin' : 'Missed the line'}">${hit ? '✓✓' : clear ? '✓' : '✗'} ${a}</span>`;
       },
     },
   ];
-  return table(id, cols, rows, null);
+  return table(id, cols, rows, { col: 'ps', asc: false });
 }
 
-function smashCards() {
-  const all = smashRows();
-  const top = (k) => [...all].filter((x) => (k === 'smash' ? x.pSmash : x.pDud) > 0).sort((a, b) => (k === 'smash' ? b.pSmash - a.pSmash : b.pDud - a.pDud)).slice(0, 15);
+function viewBoomLines() {
+  const all = lineRows();
+  const n = 30;
+  const boom = [...all].sort((a, b) => b.pSmash - a.pSmash).slice(0, n);
+  const bust = all.filter((x) => x.pDud > 0).sort((a, b) => b.pDud - a.pDud).slice(0, n);
   const cal = (bs) => (bs ? bs.filter((b) => b.n >= 50).map((b) => `<span class="chip">model ${Math.round(b.pred * 100)}% → <strong>${Math.round(b.hit * 100)}%</strong></span>`).join('') : '');
-  return `<div class="card"><h3>Prop smash spots</h3>
-      <p class="small muted">Props the model expects him to clear <em>by a lot</em>: the chance he beats the line by 50%+ (and by at least 15 yds / 20 rush+rec / 50 passing / 2 catches). Different from edge: a prop can have a big edge but only clear by a little.</p>
-      <div class="chips">${cal(picksRecord?.smash) ? `<span class="small muted">Backtest:</span>${cal(picksRecord.smash)}` : ''}</div>
-      ${smashTable('smash', top('smash'), 'smash')}</div>
-    <div class="card"><h3>Prop dud spots</h3>
-      <p class="small muted">The chance he falls a third or more short of the line (same minimum margins): strong unders.</p>
-      <div class="chips">${cal(picksRecord?.dud) ? `<span class="small muted">Backtest:</span>${cal(picksRecord.dud)}` : ''}</div>
-      ${smashTable('dud', top('dud'), 'dud')}</div>`;
+  return `<div class="toolbar">
+      ${seg('boomView', [['lines', 'On the line'], ['fpts', 'Fantasy points']])}
+      ${seg('pos', [['ALL', 'All'], ...Object.keys(sport.positions).map((p) => [p, p])])}
+      ${seg('boomLines', [['all', 'All lines'], ['vegas', 'Vegas only']])}
+      <input id="search" type="search" placeholder="Player or team…" value="${esc(state.search)}">
+    </div>
+    <div class="toolbar">${seg('boomMarket', [['all', 'All'], ...Object.entries(NFL_MARKETS).filter(([k]) => k !== 'anytime_td')])}
+      <span class="spacer"></span><span class="muted">Boom = clears the line by 40%+ (at least +5 rush/rec yds, +7 rush+rec, +25 pass, +1 catch); bust = 40%+ under. Vegas line where pulled, otherwise estimated (est.). Click a column to sort. ${sampleNote()}</span></div>
+    <div class="stack">
+      <div class="card"><h3>Boom on the line (top ${n})</h3>
+        <div class="chips">${cal(picksRecord?.smash) ? `<span class="small muted">Backtest:</span>${cal(picksRecord.smash)}` : ''}</div>
+        ${lineTable('line-boom', boom, 'boom')}
+        <p class="small muted">Result: ✓✓ boomed · ✓ cleared the line but not by the boom margin · ✗ missed.</p></div>
+      <div class="card"><h3>Bust on the line (top ${n})</h3>
+        <div class="chips">${cal(picksRecord?.dud) ? `<span class="small muted">Backtest:</span>${cal(picksRecord.dud)}` : ''}</div>
+        ${lineTable('line-bust', bust, 'bust')}
+        <p class="small muted">Result: ✓✓ busted · ✓ stayed under but not by the bust margin · ✗ went over.</p></div>
+    </div>`;
 }
 
 function viewBoomBust() {
+  if (state.boomView === 'lines') return viewBoomLines();
   if (!boomFit) return '<div class="card">Boom/bust model not built yet — run <code>node tools/fit_boom_bust.mjs</code>.</div>';
   let rows = boomRows().filter((x) => teamOn(x.p.team));
   if (state.pos !== 'ALL') rows = rows.filter((x) => x.p.pos === state.pos);
@@ -1323,14 +1347,14 @@ function viewBoomBust() {
     .map((a) => `<tr><td class="l">${esc(ANGLE_LABELS[a.id] ?? a.id)}</td><td class="l">${EFFECT_STYLE[a.effect].label}</td><td>${pctFmt(a.rec.boom)} <span class="rk">vs ${pctFmt(a.rec.baseBoom)}</span></td><td>${pctFmt(a.rec.bust)} <span class="rk">vs ${pctFmt(a.rec.baseBust)}</span></td><td>${a.rec.n}</td></tr>`)
     .join('');
   return `<div class="toolbar">
+      ${seg('boomView', [['lines', 'On the line'], ['fpts', 'Fantasy points']])}
       ${seg('pos', [['ALL', 'All'], ...Object.keys(sport.positions).map((p) => [p, p])])}
       <input id="search" type="search" placeholder="Player or team…" value="${esc(state.search)}">
       <span class="spacer"></span>
-      <span class="muted">Boom = 1.5× his average or more; bust = half or less. Angles are specific matchup setups, each shown with its backtested record. ${sampleNote()}</span>
+      <span class="muted">Fantasy points: boom = 1.5× his average or more; bust = half or less. Angles are specific matchup setups, each shown with its backtested record. ${sampleNote()}</span>
     </div>
     <div class="stack">
       <div class="card"><h3>Boom candidates</h3>${boomTable('boom', boom, 'boom')}</div>
-      ${smashCards()}
       <div class="card"><h3>Bust risks</h3>${boomTable('bust', bust, 'bust')}</div>
       <div class="card"><h3>Angle track record (2025 + 2026 backtest)</h3>
         <div class="tbl-wrap"><table><tr><th class="l">Angle</th><th class="l">What it actually does</th><th>Boom rate</th><th>Bust rate</th><th>Games</th></tr>${legend}</table></div>

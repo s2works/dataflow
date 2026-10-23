@@ -646,11 +646,12 @@ function smashTableNhl(id, rows, kind, idx) {
     { id: 'name', label: 'Player', cls: 'l', cell: (x) => `${esc(x.name)} <span class="pos">${x.pos}</span>` },
     { id: 'game', label: 'Game', cls: 'l', cell: (x) => `${x.team} <span class="vs">${x.home ? 'vs' : '@'}</span> ${x.opp}` },
     { id: 'prop', label: 'Line', cls: 'l', cell: (x) => `${x.line} ${MARKET_LABEL[x.market]}` },
-    { id: 'proj', label: 'Proj', cell: (x) => `<strong>${fmt(x.proj, x.market === 'saves' ? 1 : 2)}</strong>` },
-    { id: 'p', label: smash ? 'Over' : 'Under', title: 'Model chance of clearing the line on this side', cell: (x) => pct(smash ? x.p : 1 - x.p) },
+    { id: 'proj', label: 'Proj', sort: (x) => x.proj, cell: (x) => `<strong>${fmt(x.proj, x.market === 'saves' ? 1 : 2)}</strong>` },
+    { id: 'vs', label: 'vs Line', sort: (x) => x.proj / x.line - 1, bg: (x) => edgeColor((x.proj / x.line - 1) * 100, 60), cell: (x) => { const v = Math.round((x.proj / x.line - 1) * 100); return v >= 0 ? `+${v}%` : `−${-v}%`; } },
+    { id: 'p', label: smash ? 'Over' : 'Under', title: 'Model chance of clearing the line on this side', sort: (x) => (smash ? x.p : 1 - x.p), cell: (x) => pct(smash ? x.p : 1 - x.p) },
     {
-      id: 'ps', label: smash ? 'Smash' : 'Dud',
-      title: smash ? 'Chance of beating the line by 50%+ and by at least 2 shots/blocks, 1 point/goal/assist, 8 saves' : 'Chance of falling a third or more short (same minimum margins)',
+      id: 'ps', label: smash ? 'Boom' : 'Bust', sort: (x) => (smash ? x.pSmash : x.pDud),
+      title: smash ? 'Chance of clearing the line by 40%+ and by at least 1 (shots, blocks, points, goals, assists) or 5 saves' : 'Chance of falling 40%+ short (same minimum margins)',
       bg: (x) => (smash ? `rgba(var(--good-rgb), ${Math.min(0.6, x.pSmash)})` : `rgba(var(--bad-rgb), ${Math.min(0.6, x.pDud)})`),
       cell: (x) => `<strong>${pct(smash ? x.pSmash : x.pDud)}</strong> <span class="rk">${smash ? `${x.smash}+` : `≤ ${x.dud}`}</span>`,
     },
@@ -661,11 +662,12 @@ function smashTableNhl(id, rows, kind, idx) {
         if (!r) return '<span class="muted">pending</span>';
         if (r.void) return '<span class="muted">void</span>';
         const hit = smash ? r.actual >= x.smash : r.actual <= x.dud;
-        return `<span class="res ${hit ? 'res-hit' : 'res-miss'}">${hit ? '✓' : '✗'} ${r.actual}</span>`;
+        const clear = smash ? r.actual > x.line : r.actual < x.line;
+        return `<span class="res ${hit ? 'res-hit' : clear ? '' : 'res-miss'}">${hit ? '✓✓' : clear ? '✓' : '✗'} ${r.actual}</span>`;
       },
     },
   ];
-  return table(id, cols, rows, null);
+  return table(id, cols, rows, { col: 'ps', asc: false });
 }
 
 function viewSmashNhl() {
@@ -680,12 +682,12 @@ function viewSmashNhl() {
   const cal = (bs) => (bs ? bs.filter((b) => b.n >= 100).map((b) => `<span class="chip">model ${Math.round(b.pred * 100)}% → <strong>${Math.round(b.hit * 100)}%</strong></span>`).join('') : '');
   const rec = record?.picks;
   return `<div class="stack">
-      <div class="card"><h3>Smash spots</h3>
-        <p class="small muted">Props at the usual book line the model expects him to clear <em>by a lot</em>: 50%+ over the line and by at least 2 shots / 2 blocks / 1 point, goal or assist / 8 saves (e.g. 5+ shots on a 2.5 line, 2+ points on 0.5). A big edge can still be a narrow clear; this is the chance of a big night.</p>
+      <div class="card"><h3>Boom on the line</h3>
+        <p class="small muted">Props at the usual book line the model expects him to clear comfortably: 40%+ over the line and by at least 1 (shots, blocks, points, goals, assists) or 5 saves, e.g. 4+ shots on a 2.5 line, 2+ points on 0.5. Click a column to sort. Result: ✓✓ boomed · ✓ cleared the line only · ✗ missed.</p>
         <div class="chips">${cal(rec?.smash) ? `<span class="small muted">Backtest:</span>${cal(rec.smash)}` : ''}</div>
         ${smashTableNhl('nhl-smash', smash, 'smash', idx)}</div>
-      <div class="card"><h3>Dud spots</h3>
-        <p class="small muted">The chance he falls a third or more short (lines of 1.5+ only; e.g. 1 or fewer shots on a 3.5 line): strong unders.</p>
+      <div class="card"><h3>Bust on the line</h3>
+        <p class="small muted">The chance he falls 40%+ short (lines of 1.5+; e.g. 1 or fewer shots on a 2.5 line, 2 or fewer on 3.5): strong unders. Result: ✓✓ busted · ✓ under only · ✗ went over.</p>
         <div class="chips">${cal(rec?.dud) ? `<span class="small muted">Backtest:</span>${cal(rec.dud)}` : ''}</div>
         ${smashTableNhl('nhl-dud', dud, 'dud', idx)}</div>
     </div>`;
@@ -702,7 +704,7 @@ function viewProps() {
   const rec = record?.calib;
   const calib = rec ? `Backtested: shots 2.5+ predicted 41% → actual ${pct(rec['sog_2.5']?.find((b) => b.lo === 0.35)?.act)}; 1+ point predicted 42% → ${pct(rec['pts_0.5']?.find((b) => b.lo === 0.35)?.act)}.` : '';
   return `<div class="toolbar">
-      ${seg('propView', [['skaters', 'Skaters'], ['goalies', 'Goalie saves'], ['smash', 'Smash spots']])}
+      ${seg('propView', [['skaters', 'Skaters'], ['goalies', 'Goalie saves'], ['smash', 'Boom / bust on the line']])}
       ${skaters || smashV ? seg('pos', [['ALL', 'All'], ['C', 'C'], ['W', 'W'], ['D', 'D']]) : ''}
       ${skaters || smashV ? coreSeg() : ''}
       ${skaters ? `<span class="muted small">Model chance</span>${seg('propMin', MIN_PROB)}` : ''}
