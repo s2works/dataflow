@@ -424,6 +424,22 @@ tools/fit_game_model.mjs  game model record vs results and Vegas (refit by the r
 web/data/nfl/             generated JSON (committed)
 ```
 
+### Vercel deployment storage
+
+Every Vercel deployment keeps a full copy of the site (~27 MB, mostly data),
+so the hourly refresh would add ~650 MB a day. Two things keep that down:
+
+* **Ignored Build Step** (`tools/vercel_ignore.sh`, set as the project's
+  ignore command `bash ../tools/vercel_ignore.sh`): data-only commits deploy
+  at most every 3 hours; code/page changes and new Vegas prop lines deploy
+  right away. Skipped commits ride along with the next deploy.
+* **Deployment retention** (Vercel → Project → Settings → Security →
+  Deployment Retention Policy): keep production deployments for a short
+  time (e.g. 1 week) so old copies are deleted automatically.
+
+The pipelines also write identical files when nothing changed (player lists
+sorted by name then id), so unchanged data never triggers a commit.
+
 ### Reliable hourly refresh (free)
 
 GitHub runs the refresh job on its own hourly timer, but drops many scheduled

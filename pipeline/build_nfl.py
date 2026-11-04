@@ -235,7 +235,7 @@ def build_player_games(stats: pd.DataFrame) -> tuple[list[dict], list[dict]]:
     players = records(
         latest[["player_id", "player_display_name", "pos", "team", "headshot_url"]]
         .rename(columns={"player_id": "id", "player_display_name": "name", "headshot_url": "img"})
-        .sort_values("name")
+        .sort_values(["name", "id"])  # id breaks name ties, so the order (and file) is stable
     )
 
     extra = [c for c in [*RZ_COLS, "snap"] if c in s.columns]

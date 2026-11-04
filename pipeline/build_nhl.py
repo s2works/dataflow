@@ -287,7 +287,7 @@ def build_season(season: int) -> dict | None:
             sk["pptoi"] = sk["pptoi"].round(2)
             cols += ["att", "ixg", "pptoi"]
         latest = sk.sort_values("week").groupby("id").tail(1)
-        players = records(latest[["id", "player_name", "pos", "team"]].rename(columns={"player_name": "name"}).sort_values("name"))
+        players = records(latest[["id", "player_name", "pos", "team"]].rename(columns={"player_name": "name"}).sort_values(["name", "id"]))
         pg = sk[["id", "game_id", "week", "team", "opp", *cols]].sort_values(["week", "game_id", "team"])
         player_games = [{k: v for k, v in r.items() if v not in (0, None) or k in ("id", "game_id", "week", "team", "opp")} for r in records(pg)]
         pos = sk.groupby(["game_id", "week", "team", "opp", "pos"], as_index=False)[cols].sum()
